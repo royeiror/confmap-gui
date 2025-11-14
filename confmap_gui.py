@@ -1,6 +1,5 @@
 import sys
 import os
-import json
 import tempfile
 from pathlib import Path
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, 
@@ -8,7 +7,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QHBoxLayout
                              QWidget, QSplitter, QMessageBox, QProgressBar,
                              QGroupBox, QCheckBox)
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
-from PyQt5.QtGui import QFont, QTextCursor
+from PyQt5.QtGui import QFont
 import confmap
 
 class ConfMapWorker(QThread):
@@ -24,7 +23,7 @@ class ConfMapWorker(QThread):
     def run(self):
         try:
             # Create temporary files for processing
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False, encoding='utf-8') as f:
                 f.write(self.config_text)
                 temp_input = f.name
             
@@ -147,25 +146,28 @@ class ConfMapGUI(QMainWindow):
         
         if file_path:
             try:
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    content = f.read()
+                # Try multiple encodings to handle various file types
+                encodings = ['utf-8', 'utf-16', 'latin-1', 'cp1252']
+                content = None
+                
+                for encoding in encodings:
+                    try:
+                        with open(file_path, 'r', encoding=encoding) as f:
+                            content = f.read()
+                        break
+                    except UnicodeDecodeError:
+                        continue
+                
+                if content is None:
+                    # If all encodings fail, try binary read as last resort
+                    with open(file_path, 'rb') as f:
+                        content = f.read().decode('utf-8', errors='replace')
                 
                 self.original_text.setText(content)
                 self.process_btn.setEnabled(True)
                 self.save_btn.setEnabled(False)
                 self.statusBar().showMessage(f"Loaded: {file_path}")
                 
-            except UnicodeDecodeError:
-                # Try with different encoding
-                try:
-                    with open(file_path, 'r', encoding='latin-1') as f:
-                        content = f.read()
-                    self.original_text.setText(content)
-                    self.process_btn.setEnabled(True)
-                    self.save_btn.setEnabled(False)
-                    self.statusBar().showMessage(f"Loaded with alternative encoding: {file_path}")
-                except Exception as e:
-                    QMessageBox.critical(self, "Error", f"Could not read file: {str(e)}")
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Could not read file: {str(e)}")
     
