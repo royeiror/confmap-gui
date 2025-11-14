@@ -28,6 +28,7 @@ jobs:
         pyinstaller --name=ConfMap3DProcessor `
                     --windowed `
                     --onefile `
+                    --add-data="minimal_confmap.py;." `
                     --clean `
                     --noconfirm `
                     confmap_gui.py
