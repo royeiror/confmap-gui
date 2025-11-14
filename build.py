@@ -1,18 +1,11 @@
-# build.py
-import sys
-import os
-from PyInstaller.__main__ import run
+# build.py - Optional script for manual building
+import PyInstaller.__main__
 
-if __name__ == '__main__':
-    opts = [
-        'confmap_gui.py',
-        '--name=ConfMapProcessor',
-        '--windowed',  # No console window
-        '--onefile',   # Single executable
-        '--icon=icon.ico',  # Optional: add an icon
-        '--add-data=templates;templates',  # If confmap needs templates
-        '--clean',
-        '--noconfirm'
-    ]
-    
-    run(opts)
+PyInstaller.__main__.run([
+    'confmap_gui.py',
+    '--name=ConfMapProcessor',
+    '--windowed',
+    '--onefile',
+    '--clean',
+    '--noconfirm'
+])
