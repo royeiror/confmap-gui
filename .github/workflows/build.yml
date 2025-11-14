@@ -25,27 +25,26 @@ jobs:
         
     - name: Build executable with PyInstaller
       run: |
-        pyinstaller --name=ConfMapProcessor `
+        pyinstaller --name=ConfMap3DProcessor `
                     --windowed `
                     --onefile `
-                    --add-data="simple_confmap.py;." `
                     --clean `
                     --noconfirm `
                     confmap_gui.py
                     
     - name: Create release archive
       run: |
-        Compress-Archive -Path "dist/ConfMapProcessor.exe" -DestinationPath "ConfMapProcessor-Windows.zip" -Force
+        Compress-Archive -Path "dist/ConfMap3DProcessor.exe" -DestinationPath "ConfMap3DProcessor-Windows.zip" -Force
         
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
-        name: ConfMapProcessor-Windows
-        path: ConfMapProcessor-Windows.zip
+        name: ConfMap3DProcessor-Windows
+        path: ConfMap3DProcessor-Windows.zip
         retention-days: 30
         
     - name: Create Release
       if: startsWith(github.ref, 'refs/tags/')
       uses: softprops/action-gh-release@v1
       with:
-        files: ConfMapProcessor-Windows.zip
+        files: ConfMap3DProcessor-Windows.zip
