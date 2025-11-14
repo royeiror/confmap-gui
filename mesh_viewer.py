@@ -17,7 +17,7 @@ class MeshViewer3D(QOpenGLWidget):
         self.rotation_y = 45
         self.zoom = -3
         self.last_pos = QPoint()
-        self.wireframe = False
+        self.wireframe_overlay = False  # Show wireframe over solid
         
         # Mesh bounds for auto-zoom
         self.mesh_center = np.array([0, 0, 0])
@@ -36,7 +36,7 @@ class MeshViewer3D(QOpenGLWidget):
             self.mesh_radius = np.max(distances) if len(distances) > 0 else 1.0
             
             # Auto-adjust zoom to fit mesh
-            self.zoom = -self.mesh_radius * 2.5  # Adjust multiplier as needed
+            self.zoom = -self.mesh_radius * 2.5
             
         self.update()
         
@@ -45,15 +45,26 @@ class MeshViewer3D(QOpenGLWidget):
         glEnable(GL_DEPTH_TEST)
         glEnable(GL_LIGHTING)
         glEnable(GL_LIGHT0)
+        glEnable(GL_LIGHT1)
         glEnable(GL_COLOR_MATERIAL)
         glColorMaterial(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE)
         
-        # Set up lighting
+        # Set up main lighting
         glLightfv(GL_LIGHT0, GL_POSITION, [2, 2, 2, 1])
         glLightfv(GL_LIGHT0, GL_AMBIENT, [0.3, 0.3, 0.3, 1])
-        glLightfv(GL_LIGHT0, GL_DIFFUSE, [0.7, 0.7, 0.7, 1])
+        glLightfv(GL_LIGHT0, GL_DIFFUSE, [0.8, 0.8, 0.8, 1])
+        glLightfv(GL_LIGHT0, GL_SPECULAR, [0.5, 0.5, 0.5, 1])
         
-        glClearColor(0.95, 0.95, 0.95, 1.0)
+        # Set up secondary lighting for better depth perception
+        glLightfv(GL_LIGHT1, GL_POSITION, [-2, -1, -1, 1])
+        glLightfv(GL_LIGHT1, GL_DIFFUSE, [0.3, 0.3, 0.3, 1])
+        glLightfv(GL_LIGHT1, GL_SPECULAR, [0.2, 0.2, 0.2, 1])
+        
+        # Set material properties
+        glMaterialfv(GL_FRONT, GL_SPECULAR, [0.5, 0.5, 0.5, 1])
+        glMaterialf(GL_FRONT, GL_SHININESS, 50.0)
+        
+        glClearColor(0.1, 0.1, 0.1, 1.0)  # Dark background for better contrast
         
     def resizeGL(self, width, height):
         """Handle window resize"""
@@ -82,24 +93,47 @@ class MeshViewer3D(QOpenGLWidget):
             self.draw_mesh()
                 
     def draw_mesh(self):
-        """Draw the 3D mesh"""
-        if self.wireframe:
-            glPolygonMode(GL_FRONT_AND_BACK, GL_LINE)
-            glDisable(GL_LIGHTING)
-            glColor3f(0.2, 0.2, 0.8)
-            glLineWidth(1.5)
-        else:
-            glPolygonMode(GL_FRONT_AND_BACK, GL_FILL)
-            glEnable(GL_LIGHTING)
-            glColor3f(0.6, 0.7, 0.9)
-            
+        """Draw the 3D mesh with optional wireframe overlay"""
+        # Draw solid mesh first
+        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL)
+        glEnable(GL_LIGHTING)
+        glColor3f(0.6, 0.7, 0.9)  # Base color
+        
         glBegin(GL_TRIANGLES)
         for face in self.faces:
             if len(face) == 3:  # Triangle
+                # Calculate face normal for better lighting
+                v0 = self.vertices[face[0]]
+                v1 = self.vertices[face[1]]
+                v2 = self.vertices[face[2]]
+                
+                # Calculate normal using cross product
+                edge1 = v1 - v0
+                edge2 = v2 - v0
+                normal = np.cross(edge1, edge2)
+                normal = normal / np.linalg.norm(normal)  # Normalize
+                
+                glNormal3fv(normal)
+                
                 for vertex_idx in face:
                     if vertex_idx < len(self.vertices):
                         glVertex3fv(self.vertices[vertex_idx])
         glEnd()
+        
+        # Draw wireframe overlay if enabled
+        if self.wireframe_overlay:
+            glPolygonMode(GL_FRONT_AND_BACK, GL_LINE)
+            glDisable(GL_LIGHTING)
+            glColor3f(0.1, 0.1, 0.3)  # Dark blue wireframe
+            glLineWidth(1.0)
+            
+            glBegin(GL_TRIANGLES)
+            for face in self.faces:
+                if len(face) == 3:  # Triangle
+                    for vertex_idx in face:
+                        if vertex_idx < len(self.vertices):
+                            glVertex3fv(self.vertices[vertex_idx])
+            glEnd()
         
         # Reset to defaults
         glPolygonMode(GL_FRONT_AND_BACK, GL_FILL)
@@ -131,9 +165,9 @@ class MeshViewer3D(QOpenGLWidget):
         self.zoom = max(-50.0, min(-0.1, self.zoom))
         self.update()
         
-    def set_wireframe(self, wireframe):
-        """Set wireframe mode"""
-        self.wireframe = wireframe
+    def set_wireframe_overlay(self, wireframe):
+        """Set wireframe overlay mode"""
+        self.wireframe_overlay = wireframe
         self.update()
 
 class UVLayoutViewer(QOpenGLWidget):
@@ -141,33 +175,19 @@ class UVLayoutViewer(QOpenGLWidget):
         super().__init__(parent)
         self.uv_vertices = None
         self.uv_faces = None
-        self.wireframe = False
-        
-        # UV bounds for proper scaling
-        self.uv_center = np.array([0.5, 0.5])
-        self.uv_scale = 1.0
+        self.wireframe = True  # Default to wireframe for UV view
         
     def set_uv_layout(self, uv_vertices, uv_faces):
         """Set UV layout data for display"""
         self.uv_vertices = uv_vertices
         self.uv_faces = uv_faces
-        
-        # Calculate UV bounds for proper display
-        if uv_vertices is not None and len(uv_vertices) > 0:
-            uv_array = np.array(uv_vertices)
-            if len(uv_array) > 0:
-                min_uv = np.min(uv_array, axis=0)
-                max_uv = np.max(uv_array, axis=0)
-                self.uv_center = (min_uv + max_uv) / 2.0
-                self.uv_scale = max(np.max(max_uv - min_uv) * 0.6, 0.1)  # Scale to fit
-                
         self.update()
         
     def initializeGL(self):
         """Initialize OpenGL"""
         glEnable(GL_DEPTH_TEST)
         glDisable(GL_LIGHTING)
-        glClearColor(1.0, 1.0, 1.0, 1.0)
+        glClearColor(1.0, 1.0, 1.0, 1.0)  # White background
         
     def resizeGL(self, width, height):
         """Handle window resize"""
@@ -176,15 +196,14 @@ class UVLayoutViewer(QOpenGLWidget):
         glLoadIdentity()
         
         # Orthographic projection for 2D UV space
+        # Show the entire [0,1] UV space with some padding
+        padding = 0.1
         aspect = width / float(height) if height != 0 else 1.0
         
-        # Use calculated scale, but ensure we can see the entire [0,1] range
-        scale = max(self.uv_scale, 1.0) * 1.2  # Add some padding
-        
         if aspect > 1:
-            glOrtho(-scale, scale, -scale/aspect, scale/aspect, -1, 1)
+            glOrtho(-padding, 1 + padding, (-padding)/aspect, (1 + padding)/aspect, -1, 1)
         else:
-            glOrtho(-scale*aspect, scale*aspect, -scale, scale, -1, 1)
+            glOrtho(-padding * aspect, (1 + padding) * aspect, -padding, 1 + padding, -1, 1)
             
         glMatrixMode(GL_MODELVIEW)
         
@@ -193,37 +212,33 @@ class UVLayoutViewer(QOpenGLWidget):
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
         glLoadIdentity()
         
-        # Center the UV layout
-        if self.uv_vertices is not None and len(self.uv_vertices) > 0:
-            glTranslatef(-self.uv_center[0], -self.uv_center[1], 0)
-        
         if self.uv_vertices is not None and self.uv_faces is not None:
             self.draw_uv_layout()
             self.draw_uv_boundary()
                 
     def draw_uv_layout(self):
-        """Draw the UV layout with proper coloring"""
+        """Draw the UV layout"""
         if self.wireframe:
+            # Wireframe mode - show edges clearly
             glPolygonMode(GL_FRONT_AND_BACK, GL_LINE)
-            glColor3f(0.8, 0.2, 0.2)
+            glColor3f(0.2, 0.2, 0.8)  # Blue wireframe
             glLineWidth(1.5)
         else:
+            # Filled mode with different colors per face
             glPolygonMode(GL_FRONT_AND_BACK, GL_FILL)
             
         glBegin(GL_TRIANGLES)
         for i, face in enumerate(self.uv_faces):
             if len(face) == 3:  # Triangle
-                # Alternate colors for different faces in filled mode
                 if not self.wireframe:
                     # Create a color based on face index to differentiate faces
                     hue = (i * 0.6180339887) % 1.0  # Golden ratio for distribution
-                    r = 0.6 + 0.3 * (hue % 0.333)
-                    g = 0.6 + 0.3 * ((hue + 0.333) % 0.333)
-                    b = 0.6 + 0.3 * ((hue + 0.666) % 0.333)
+                    r = 0.6 + 0.3 * ((hue + 0.0) % 1.0)
+                    g = 0.6 + 0.3 * ((hue + 0.333) % 1.0)
+                    b = 0.6 + 0.3 * ((hue + 0.666) % 1.0)
                     glColor3f(r, g, b)
-                else:
-                    glColor3f(0.8, 0.2, 0.2)  # Red for wireframe
                 
+                # Draw the triangle
                 for uv_idx in face:
                     if uv_idx < len(self.uv_vertices):
                         uv = self.uv_vertices[uv_idx]
@@ -237,7 +252,8 @@ class UVLayoutViewer(QOpenGLWidget):
     def draw_uv_boundary(self):
         """Draw UV space boundary and grid"""
         # Draw the [0,1] boundary
-        glColor3f(0.8, 0.8, 0.8)
+        glColor3f(0.7, 0.7, 0.7)
+        glLineWidth(1.0)
         glBegin(GL_LINE_LOOP)
         glVertex3f(0, 0, 0)
         glVertex3f(1, 0, 0)
@@ -247,6 +263,7 @@ class UVLayoutViewer(QOpenGLWidget):
         
         # Draw grid lines for better orientation
         glColor3f(0.9, 0.9, 0.9)
+        glLineWidth(0.5)
         glBegin(GL_LINES)
         # Vertical lines
         for i in range(1, 4):
@@ -259,6 +276,9 @@ class UVLayoutViewer(QOpenGLWidget):
             glVertex3f(0, y, 0)
             glVertex3f(1, y, 0)
         glEnd()
+        
+        # Reset line width
+        glLineWidth(1.0)
         
     def set_wireframe(self, wireframe):
         """Set wireframe mode"""
@@ -273,20 +293,20 @@ class ComparisonViewer(QWidget):
         
     def init_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(2, 2, 2, 2)  # Minimize margins
-        layout.setSpacing(4)  # Minimize spacing
+        layout.setContentsMargins(2, 2, 2, 2)
+        layout.setSpacing(4)
         
-        # Splitter for side-by-side view - use maximum space
+        # Splitter for side-by-side view
         splitter = QSplitter(Qt.Horizontal)
         
-        # Left side - 3D mesh with minimal label
+        # Left side - 3D mesh
         left_widget = QWidget()
         left_layout = QVBoxLayout(left_widget)
         left_layout.setContentsMargins(2, 2, 2, 2)
         left_layout.setSpacing(2)
         
         left_label = QLabel("3D Mesh • Drag to rotate • Wheel to zoom")
-        left_label.setMaximumHeight(15)  # Very small label
+        left_label.setMaximumHeight(15)
         left_label.setAlignment(Qt.AlignCenter)
         left_label.setStyleSheet("color: gray; font-size: 9px;")
         left_layout.addWidget(left_label)
@@ -295,14 +315,14 @@ class ComparisonViewer(QWidget):
         left_layout.addWidget(self.mesh_viewer)
         splitter.addWidget(left_widget)
         
-        # Right side - UV layout with minimal label
+        # Right side - UV layout
         right_widget = QWidget()
         right_layout = QVBoxLayout(right_widget)
         right_layout.setContentsMargins(2, 2, 2, 2)
         right_layout.setSpacing(2)
         
-        right_label = QLabel("UV Layout • Different colors = different faces")
-        right_label.setMaximumHeight(15)  # Very small label
+        right_label = QLabel("UV Layout • Wireframe shows mesh structure")
+        right_label.setMaximumHeight(15)
         right_label.setAlignment(Qt.AlignCenter)
         right_label.setStyleSheet("color: gray; font-size: 9px;")
         right_layout.addWidget(right_label)
@@ -311,17 +331,27 @@ class ComparisonViewer(QWidget):
         right_layout.addWidget(self.uv_viewer)
         splitter.addWidget(right_widget)
         
-        # Set equal sizes and make splitter stretch
         splitter.setSizes([500, 500])
-        layout.addWidget(splitter, 1)  # Give splitter stretch factor
+        layout.addWidget(splitter, 1)
         
-        # Minimal controls at the bottom
+        # Controls
         controls_layout = QHBoxLayout()
         controls_layout.setContentsMargins(2, 2, 2, 2)
         
-        self.wireframe_checkbox = QCheckBox("Wireframe")
-        self.wireframe_checkbox.stateChanged.connect(self.on_wireframe_changed)
-        controls_layout.addWidget(self.wireframe_checkbox)
+        # 3D view controls
+        controls_layout.addWidget(QLabel("3D:"))
+        self.wireframe_3d_checkbox = QCheckBox("Wireframe Overlay")
+        self.wireframe_3d_checkbox.stateChanged.connect(self.on_3d_wireframe_changed)
+        controls_layout.addWidget(self.wireframe_3d_checkbox)
+        
+        controls_layout.addSpacing(20)
+        
+        # UV view controls
+        controls_layout.addWidget(QLabel("UV:"))
+        self.wireframe_uv_checkbox = QCheckBox("Wireframe")
+        self.wireframe_uv_checkbox.setChecked(True)  # Default to wireframe for UV
+        self.wireframe_uv_checkbox.stateChanged.connect(self.on_uv_wireframe_changed)
+        controls_layout.addWidget(self.wireframe_uv_checkbox)
         
         controls_layout.addStretch()
         
@@ -336,20 +366,23 @@ class ComparisonViewer(QWidget):
     def set_mesh_data(self, vertices, faces, uv_vertices, uv_faces):
         """Set mesh data for both viewers"""
         self.mesh_viewer.set_mesh(vertices, faces)
-        self.uv_viewer.set_uv_layout(uv_vertices, uv_faces)
+        if uv_vertices is not None and uv_faces is not None:
+            self.uv_viewer.set_uv_layout(uv_vertices, uv_faces)
         
-    def on_wireframe_changed(self, state):
-        """Handle wireframe toggle for both viewers"""
+    def on_3d_wireframe_changed(self, state):
+        """Handle 3D wireframe overlay toggle"""
         wireframe = (state == Qt.Checked)
-        self.mesh_viewer.set_wireframe(wireframe)
+        self.mesh_viewer.set_wireframe_overlay(wireframe)
+        
+    def on_uv_wireframe_changed(self, state):
+        """Handle UV wireframe toggle"""
+        wireframe = (state == Qt.Checked)
         self.uv_viewer.set_wireframe(wireframe)
         
     def reset_views(self):
         """Reset both views to default"""
-        # For 3D view, we need to recreate the mesh to reset auto-zoom
         if hasattr(self.mesh_viewer, 'vertices') and self.mesh_viewer.vertices is not None:
             self.mesh_viewer.set_mesh(self.mesh_viewer.vertices, self.mesh_viewer.faces)
         
-        # For UV view, reset rotation and recreate
         if hasattr(self.uv_viewer, 'uv_vertices') and self.uv_viewer.uv_vertices is not None:
             self.uv_viewer.set_uv_layout(self.uv_viewer.uv_vertices, self.uv_viewer.uv_faces)
