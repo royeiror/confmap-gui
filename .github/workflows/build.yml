@@ -1,0 +1,50 @@
+name: Build Windows Executable
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:  # Allow manual triggering
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        
+    - name: Build executable with PyInstaller
+      run: |
+        pyinstaller --name=ConfMapProcessor `
+                    --windowed `
+                    --onefile `
+                    --clean `
+                    --noconfirm `
+                    confmap_gui.py
+                    
+    - name: Create release archive
+      run: |
+        Compress-Archive -Path "dist/ConfMapProcessor.exe" -DestinationPath "ConfMapProcessor-Windows.zip" -Force
+        
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ConfMapProcessor-Windows
+        path: ConfMapProcessor-Windows.zip
+        retention-days: 30
+        
+    - name: Create Release
+      if: startsWith(github.ref, 'refs/tags/')
+      uses: softprops/action-gh-release@v1
+      with:
+        files: ConfMapProcessor-Windows.zip
