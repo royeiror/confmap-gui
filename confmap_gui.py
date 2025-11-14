@@ -5,37 +5,27 @@ from pathlib import Path
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, 
                              QPushButton, QTextEdit, QLabel, QFileDialog, 
                              QWidget, QSplitter, QMessageBox, QProgressBar,
-                             QGroupBox, QCheckBox)
+                             QGroupBox, QCheckBox, QComboBox)
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QFont
-import confmap
+
+# Import our simple confmap implementation
+from simple_confmap import from_string
 
 class ConfMapWorker(QThread):
     """Worker thread for confmap processing to prevent GUI freezing"""
     finished = pyqtSignal(str, str)  # original, processed
     error = pyqtSignal(str)
     
-    def __init__(self, config_text, use_json=False):
+    def __init__(self, config_text, output_format):
         super().__init__()
         self.config_text = config_text
-        self.use_json = use_json
+        self.output_format = output_format
     
     def run(self):
         try:
-            # Create temporary files for processing
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False, encoding='utf-8') as f:
-                f.write(self.config_text)
-                temp_input = f.name
-            
-            # Process with confmap
-            if self.use_json:
-                result = confmap.from_file(temp_input, to='json')
-            else:
-                result = confmap.from_file(temp_input, to='yaml')
-            
-            # Clean up temp file
-            os.unlink(temp_input)
-            
+            # Process with our simple confmap
+            result = from_string(self.config_text, self.output_format)
             self.finished.emit(self.config_text, result)
             
         except Exception as e:
@@ -72,9 +62,11 @@ class ConfMapGUI(QMainWindow):
         options_group = QGroupBox("Conversion Options")
         options_layout = QHBoxLayout(options_group)
         
-        self.json_checkbox = QCheckBox("Convert to JSON")
-        self.json_checkbox.setChecked(False)
-        options_layout.addWidget(self.json_checkbox)
+        options_layout.addWidget(QLabel("Output Format:"))
+        self.format_combo = QComboBox()
+        self.format_combo.addItems(["YAML", "JSON", "INI"])
+        self.format_combo.setCurrentText("YAML")
+        options_layout.addWidget(self.format_combo)
         
         options_layout.addStretch()
         layout.addWidget(options_group)
@@ -111,7 +103,7 @@ class ConfMapGUI(QMainWindow):
         left_layout = QVBoxLayout(left_widget)
         left_layout.addWidget(QLabel("Original Configuration:"))
         self.original_text = QTextEdit()
-        self.original_text.setPlaceholderText("Original configuration will appear here...")
+        self.original_text.setPlaceholderText("Original configuration will appear here...\nSupported formats: YAML, JSON, INI")
         left_layout.addWidget(self.original_text)
         splitter.addWidget(left_widget)
         
@@ -141,7 +133,7 @@ class ConfMapGUI(QMainWindow):
             self,
             "Select Configuration File",
             "",
-            "Configuration Files (*.yaml *.yml *.json *.ini *.conf *.cfg *.toml);;All Files (*)"
+            "Configuration Files (*.yaml *.yml *.json *.ini *.conf *.cfg);;All Files (*)"
         )
         
         if file_path:
@@ -184,8 +176,11 @@ class ConfMapGUI(QMainWindow):
         self.progress_bar.setVisible(True)
         self.progress_bar.setRange(0, 0)  # Indeterminate progress
         
+        # Get output format
+        output_format = self.format_combo.currentText().lower()
+        
         # Start worker thread
-        self.worker = ConfMapWorker(content, self.json_checkbox.isChecked())
+        self.worker = ConfMapWorker(content, output_format)
         self.worker.finished.connect(self.on_processing_finished)
         self.worker.error.connect(self.on_processing_error)
         self.worker.start()
@@ -204,9 +199,6 @@ class ConfMapGUI(QMainWindow):
         self.progress_bar.setVisible(False)
         
         self.statusBar().showMessage("Processing completed successfully!")
-        
-        # Show success message
-        QMessageBox.information(self, "Success", "Configuration processed successfully!")
     
     def on_processing_error(self, error_msg):
         """Handle processing errors"""
@@ -227,8 +219,13 @@ class ConfMapGUI(QMainWindow):
             QMessageBox.warning(self, "Warning", "No processed content to save!")
             return
         
-        # Determine default file extension
-        ext = ".json" if self.json_checkbox.isChecked() else ".yaml"
+        # Determine file extension based on output format
+        format_extensions = {
+            'yaml': '.yaml',
+            'json': '.json', 
+            'ini': '.ini'
+        }
+        ext = format_extensions.get(self.format_combo.currentText().lower(), '.txt')
         
         file_path, _ = QFileDialog.getSaveFileName(
             self,
