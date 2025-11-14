@@ -242,8 +242,10 @@ class ConfMapGUI(QMainWindow):
                 self.stats_label.setText(f"{len(vertices)} vertices, {len(faces)} faces")
                 
                 # Show initial mesh (without UVs yet)
-                empty_uv_vertices = np.array([[0, 0]])
-                empty_uv_faces = []
+                # Create proper empty UV data that matches the mesh structure
+                empty_uv_vertices = np.zeros((len(vertices), 2))  # Proper shape: (n_vertices, 2)
+                empty_uv_faces = faces  # Use same face structure as 3D mesh
+                
                 self.comparison_viewer.set_mesh_data(vertices, faces, empty_uv_vertices, empty_uv_faces)
                 
                 # Set default output path
@@ -336,7 +338,10 @@ class ConfMapGUI(QMainWindow):
         self.current_uv_faces = uv_faces
         
         # Update stats
-        self.stats_label.setText(f"{len(vertices)} vertices, {len(faces)} faces, {len(uv_vertices)} UV points")
+        if uv_vertices is not None:
+            self.stats_label.setText(f"{len(vertices)} vertices, {len(faces)} faces, {len(uv_vertices)} UV points")
+        else:
+            self.stats_label.setText(f"{len(vertices)} vertices, {len(faces)} faces")
         
         # Update the comparison viewer with both 3D and UV data
         self.comparison_viewer.set_mesh_data(vertices, faces, uv_vertices, uv_faces)
