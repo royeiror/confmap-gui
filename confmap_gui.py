@@ -1,6 +1,7 @@
 import sys
 import os
 import tempfile
+import numpy as np
 from pathlib import Path
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, 
                              QPushButton, QTextEdit, QLabel, QFileDialog, 
@@ -234,7 +235,10 @@ class ConfMapGUI(QMainWindow):
                 self.current_faces = faces
                 
                 # Show initial mesh (without UVs yet)
-                self.comparison_viewer.set_mesh_data(vertices, faces, np.array([[0,0]]), [])
+                # Create empty UV data for initial display
+                empty_uv_vertices = np.array([[0, 0]])
+                empty_uv_faces = []
+                self.comparison_viewer.set_mesh_data(vertices, faces, empty_uv_vertices, empty_uv_faces)
                 
                 # Set default output path
                 input_path = Path(file_path)
