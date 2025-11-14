@@ -29,6 +29,7 @@ jobs:
                     --windowed `
                     --onefile `
                     --add-data="minimal_confmap.py;." `
+                    --add-data="mesh_viewer.py;." `
                     --clean `
                     --noconfirm `
                     confmap_gui.py
