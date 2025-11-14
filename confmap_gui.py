@@ -5,16 +5,17 @@ from pathlib import Path
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, 
                              QPushButton, QTextEdit, QLabel, QFileDialog, 
                              QWidget, QSplitter, QMessageBox, QProgressBar,
-                             QGroupBox, QComboBox, QCheckBox)
+                             QGroupBox, QComboBox, QCheckBox, QTabWidget)
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QFont, QTextCursor
 
 # Import our minimal confmap implementation
 from minimal_confmap import BFF, SCP, AE, read_obj, write_obj
+from mesh_viewer import MeshViewer
 
 class ConfMapWorker(QThread):
     """Worker thread for confmap processing to prevent GUI freezing"""
-    finished = pyqtSignal(str, str, str)  # input_path, output_path, log
+    finished = pyqtSignal(str, str, str, object, object, object, object)  # input_path, output_path, log, vertices, faces, uv_vertices, uv_faces
     error = pyqtSignal(str)
     progress = pyqtSignal(str)
     
@@ -24,26 +25,30 @@ class ConfMapWorker(QThread):
         self.output_path = output_path
         self.method = method
         self.generate_uv = generate_uv
+        self.vertices = None
+        self.faces = None
+        self.uv_vertices = None
+        self.uv_faces = None
     
     def run(self):
         try:
             self.progress.emit("Reading OBJ file...")
             
             # Read the input OBJ file
-            vertices, faces = read_obj(self.input_path)
+            self.vertices, self.faces = read_obj(self.input_path)
             
-            self.progress.emit(f"Loaded mesh: {len(vertices)} vertices, {len(faces)} faces")
+            self.progress.emit(f"Loaded mesh: {len(self.vertices)} vertices, {len(self.faces)} faces")
             
             # Select the conformal mapping method
             if self.method == "BFF":
                 self.progress.emit("Using BFF (Boundary First Flattening) method...")
-                cm = BFF(vertices, faces)
+                cm = BFF(self.vertices, self.faces)
             elif self.method == "SCP":
                 self.progress.emit("Using SCP (Spectral Conformal Parameterization) method...")
-                cm = SCP(vertices, faces)
+                cm = SCP(self.vertices, self.faces)
             elif self.method == "AE":
                 self.progress.emit("Using AE (Authalic Embedding) method...")
-                cm = AE(vertices, faces)
+                cm = AE(self.vertices, self.faces)
             else:
                 raise ValueError(f"Unknown method: {self.method}")
             
@@ -52,30 +57,33 @@ class ConfMapWorker(QThread):
             # Generate the UV layout
             if self.generate_uv:
                 result = cm.layout()
+                self.uv_vertices = result.uv_vertices
+                self.uv_faces = result.uv_faces
                 self.progress.emit("UV layout generated successfully")
                 
                 # Write output with UV coordinates
-                write_obj(self.output_path, vertices, faces, result.uv_vertices, result.uv_faces)
+                write_obj(self.output_path, self.vertices, self.faces, self.uv_vertices, self.uv_faces)
                 log_message = f"""Processing Complete!
 Input: {self.input_path}
 Output: {self.output_path}
 Method: {self.method}
-Vertices: {len(vertices)}
-Faces: {len(faces)}
-UV vertices: {len(result.uv_vertices)}
+Vertices: {len(self.vertices)}
+Faces: {len(self.faces)}
+UV vertices: {len(self.uv_vertices)}
 
 The output file contains the original 3D mesh with UV coordinates for texture mapping."""
             else:
                 # Just write the original mesh (for debugging)
-                write_obj(self.output_path, vertices, faces)
+                write_obj(self.output_path, self.vertices, self.faces)
                 log_message = f"""Processing Complete (No UV generated)
 Input: {self.input_path}
 Output: {self.output_path}
 Method: {self.method}
-Vertices: {len(vertices)}
-Faces: {len(faces)}"""
+Vertices: {len(self.vertices)}
+Faces: {len(self.faces)}"""
             
-            self.finished.emit(self.input_path, self.output_path, log_message)
+            self.finished.emit(self.input_path, self.output_path, log_message, 
+                             self.vertices, self.faces, self.uv_vertices, self.uv_faces)
             
         except Exception as e:
             self.error.emit(str(e))
@@ -85,11 +93,15 @@ class ConfMapGUI(QMainWindow):
         super().__init__()
         self.input_file = None
         self.output_file = None
+        self.current_vertices = None
+        self.current_faces = None
+        self.current_uv_vertices = None
+        self.current_uv_faces = None
         self.init_ui()
         
     def init_ui(self):
         self.setWindowTitle("ConfMap Processor - 3D Mesh Conformal Mapping")
-        self.setGeometry(100, 100, 1000, 700)
+        self.setGeometry(100, 100, 1400, 900)
         
         # Central widget
         central_widget = QWidget()
@@ -177,20 +189,59 @@ class ConfMapGUI(QMainWindow):
         self.progress_label.setWordWrap(True)
         layout.addWidget(self.progress_label)
         
-        # Log output
-        log_group = QGroupBox("Processing Log")
-        log_layout = QVBoxLayout(log_group)
+        # Create tab widget for visualization
+        self.tabs = QTabWidget()
+        
+        # Log tab
+        log_widget = QWidget()
+        log_layout = QVBoxLayout(log_widget)
         self.log_text = QTextEdit()
         self.log_text.setPlaceholderText("Processing log will appear here...")
         self.log_text.setReadOnly(True)
         log_layout.addWidget(self.log_text)
-        layout.addWidget(log_group, 1)
+        self.tabs.addTab(log_widget, "Processing Log")
+        
+        # Visualization tab
+        vis_widget = QWidget()
+        vis_layout = QVBoxLayout(vis_widget)
+        
+        # Visualization controls
+        vis_controls_layout = QHBoxLayout()
+        
+        vis_controls_layout.addWidget(QLabel("View Mode:"))
+        self.view_mode_combo = QComboBox()
+        self.view_mode_combo.addItems(["3D Mesh", "UV Layout"])
+        self.view_mode_combo.currentTextChanged.connect(self.on_view_mode_changed)
+        vis_controls_layout.addWidget(self.view_mode_combo)
+        
+        self.wireframe_checkbox = QCheckBox("Wireframe")
+        self.wireframe_checkbox.stateChanged.connect(self.on_wireframe_changed)
+        vis_controls_layout.addWidget(self.wireframe_checkbox)
+        
+        vis_controls_layout.addStretch()
+        vis_layout.addLayout(vis_controls_layout)
+        
+        # Create mesh viewer
+        self.mesh_viewer = MeshViewer()
+        vis_layout.addWidget(self.mesh_viewer, 1)
+        
+        self.tabs.addTab(vis_widget, "3D Visualization")
+        
+        layout.addWidget(self.tabs, 1)
         
         # Status bar
         self.statusBar().showMessage("Ready to load OBJ file")
         
         # Initialize worker
         self.worker = None
+        
+    def on_view_mode_changed(self, mode):
+        """Handle view mode change"""
+        self.mesh_viewer.set_display_mode(mode == "3D Mesh")
+        
+    def on_wireframe_changed(self, state):
+        """Handle wireframe toggle"""
+        self.mesh_viewer.set_wireframe(state == Qt.Checked)
         
     def load_file(self):
         """Load an OBJ file"""
@@ -202,24 +253,38 @@ class ConfMapGUI(QMainWindow):
         )
         
         if file_path:
-            self.input_file = file_path
-            self.input_label.setText(Path(file_path).name)
-            self.input_label.setToolTip(file_path)
-            
-            # Set default output path
-            input_path = Path(file_path)
-            default_output = input_path.parent / f"{input_path.stem}_with_uv{input_path.suffix}"
-            self.output_file = str(default_output)
-            self.output_label.setText(default_output.name)
-            self.output_label.setToolTip(str(default_output))
-            
-            self.output_btn.setEnabled(True)
-            self.process_btn.setEnabled(True)
-            self.statusBar().showMessage(f"Loaded: {file_path}")
-            
-            # Clear previous log
-            self.log_text.clear()
-            self.log_text.append(f"Loaded OBJ file: {file_path}")
+            try:
+                self.input_file = file_path
+                self.input_label.setText(Path(file_path).name)
+                self.input_label.setToolTip(file_path)
+                
+                # Read and display the mesh immediately
+                vertices, faces = read_obj(file_path)
+                self.current_vertices = vertices
+                self.current_faces = faces
+                self.mesh_viewer.set_mesh(vertices, faces)
+                
+                # Set default output path
+                input_path = Path(file_path)
+                default_output = input_path.parent / f"{input_path.stem}_with_uv{input_path.suffix}"
+                self.output_file = str(default_output)
+                self.output_label.setText(default_output.name)
+                self.output_label.setToolTip(str(default_output))
+                
+                self.output_btn.setEnabled(True)
+                self.process_btn.setEnabled(True)
+                self.statusBar().showMessage(f"Loaded: {file_path}")
+                
+                # Clear previous log
+                self.log_text.clear()
+                self.log_text.append(f"Loaded OBJ file: {file_path}")
+                self.log_text.append(f"Mesh statistics: {len(vertices)} vertices, {len(faces)} faces")
+                
+                # Switch to visualization tab
+                self.tabs.setCurrentIndex(1)
+                
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Could not load file: {str(e)}")
             
     def set_output(self):
         """Set output file location"""
@@ -280,8 +345,17 @@ class ConfMapGUI(QMainWindow):
         cursor.movePosition(QTextCursor.End)
         self.log_text.setTextCursor(cursor)
         
-    def on_processing_finished(self, input_path, output_path, log_message):
+    def on_processing_finished(self, input_path, output_path, log_message, vertices, faces, uv_vertices, uv_faces):
         """Handle successful processing"""
+        # Store the processed data
+        self.current_vertices = vertices
+        self.current_faces = faces
+        self.current_uv_vertices = uv_vertices
+        self.current_uv_faces = uv_faces
+        
+        # Update the mesh viewer with both 3D and UV data
+        self.mesh_viewer.set_mesh(vertices, faces, uv_vertices, uv_faces)
+        
         # Re-enable buttons
         self.process_btn.setEnabled(True)
         self.load_btn.setEnabled(True)
@@ -297,12 +371,15 @@ class ConfMapGUI(QMainWindow):
         self.log_text.append("="*50)
         self.log_text.append(log_message)
         
+        # Switch to visualization tab to see the result
+        self.tabs.setCurrentIndex(1)
+        
         # Show success message
         QMessageBox.information(self, "Success", 
                               f"3D mesh processed successfully!\n\n"
                               f"Input: {Path(input_path).name}\n"
                               f"Output: {Path(output_path).name}\n\n"
-                              f"The processed file has been saved with conformal mapping.")
+                              f"Switch to the '3D Visualization' tab to see the results!")
         
     def on_processing_error(self, error_msg):
         """Handle processing errors"""
