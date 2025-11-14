@@ -102,111 +102,115 @@ class ConfMapGUI(QMainWindow):
         
     def init_ui(self):
         self.setWindowTitle("ConfMap Processor - 3D Mesh Conformal Mapping")
-        self.setGeometry(100, 100, 1600, 900)
+        self.setGeometry(50, 50, 1600, 900)
         
         # Central widget
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         
-        # Main layout
+        # Main layout with minimal margins
         layout = QVBoxLayout(central_widget)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(6)
         
-        # Title
-        title = QLabel("3D Mesh Conformal Map Processor")
-        title.setFont(QFont("Arial", 16, QFont.Bold))
-        title.setAlignment(Qt.AlignCenter)
-        layout.addWidget(title)
+        # Compact title section
+        title_layout = QHBoxLayout()
         
-        # Description
-        desc = QLabel("Process 3D OBJ files to generate conformal maps for UV unwrapping")
-        desc.setAlignment(Qt.AlignCenter)
-        layout.addWidget(desc)
+        title = QLabel("ConfMap 3D Processor")
+        title.setFont(QFont("Arial", 12, QFont.Bold))
+        title_layout.addWidget(title)
         
-        # Options group
-        options_group = QGroupBox("Processing Options")
-        options_layout = QVBoxLayout(options_group)
+        title_layout.addStretch()
         
-        # Method selection
-        method_layout = QHBoxLayout()
-        method_layout.addWidget(QLabel("Conformal Mapping Method:"))
+        # Add quick stats label
+        self.stats_label = QLabel("No file loaded")
+        self.stats_label.setStyleSheet("color: gray; font-size: 10px;")
+        title_layout.addWidget(self.stats_label)
+        
+        layout.addLayout(title_layout)
+        
+        # Compact options group
+        options_group = QGroupBox("Options")
+        options_group.setMaximumHeight(80)
+        options_layout = QHBoxLayout(options_group)
+        options_layout.setContentsMargins(8, 4, 8, 4)
+        
+        options_layout.addWidget(QLabel("Method:"))
         self.method_combo = QComboBox()
         self.method_combo.addItems(["BFF", "SCP", "AE"])
-        self.method_combo.setToolTip("BFF: Boundary First Flattening (Recommended)\nSCP: Spectral Conformal Parameterization\nAE: Authalic Embedding")
-        method_layout.addWidget(self.method_combo)
-        method_layout.addStretch()
-        options_layout.addLayout(method_layout)
+        self.method_combo.setMaximumWidth(120)
+        options_layout.addWidget(self.method_combo)
         
-        # UV generation option
-        self.uv_checkbox = QCheckBox("Generate UV coordinates")
+        self.uv_checkbox = QCheckBox("Generate UV")
         self.uv_checkbox.setChecked(True)
-        self.uv_checkbox.setToolTip("Generate UV coordinates for texture mapping")
         options_layout.addWidget(self.uv_checkbox)
         
-        layout.addWidget(options_group)
+        options_layout.addStretch()
         
-        # File selection buttons
-        file_layout = QHBoxLayout()
-        
-        self.load_btn = QPushButton("Load OBJ File")
+        # File buttons
+        self.load_btn = QPushButton("Load OBJ")
         self.load_btn.clicked.connect(self.load_file)
-        self.load_btn.setStyleSheet("QPushButton { font-weight: bold; }")
-        file_layout.addWidget(self.load_btn)
+        options_layout.addWidget(self.load_btn)
         
-        self.output_btn = QPushButton("Set Output Location")
+        self.output_btn = QPushButton("Set Output")
         self.output_btn.clicked.connect(self.set_output)
         self.output_btn.setEnabled(False)
-        file_layout.addWidget(self.output_btn)
+        options_layout.addWidget(self.output_btn)
         
         self.process_btn = QPushButton("Process Mesh")
         self.process_btn.clicked.connect(self.process_mesh)
         self.process_btn.setEnabled(False)
-        self.process_btn.setStyleSheet("QPushButton { font-weight: bold; background-color: #4CAF50; color: white; }")
-        file_layout.addWidget(self.process_btn)
+        self.process_btn.setStyleSheet("QPushButton { background-color: #4CAF50; color: white; }")
+        options_layout.addWidget(self.process_btn)
         
-        layout.addLayout(file_layout)
+        layout.addWidget(options_group)
         
-        # File info
+        # Compact file info
         info_layout = QHBoxLayout()
+        info_layout.setSpacing(10)
         
-        self.input_label = QLabel("No file selected")
+        self.input_label = QLabel("Input: No file selected")
         self.input_label.setWordWrap(True)
-        info_layout.addWidget(QLabel("Input:"))
-        info_layout.addWidget(self.input_label, 1)
+        self.input_label.setStyleSheet("font-size: 10px;")
+        info_layout.addWidget(self.input_label, 2)
         
-        self.output_label = QLabel("No output location set")
+        self.output_label = QLabel("Output: Not set")
         self.output_label.setWordWrap(True)
-        info_layout.addWidget(QLabel("Output:"))
-        info_layout.addWidget(self.output_label, 1)
+        self.output_label.setStyleSheet("font-size: 10px;")
+        info_layout.addWidget(self.output_label, 2)
         
         layout.addLayout(info_layout)
         
-        # Progress bar
+        # Progress bar (hidden by default)
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
+        self.progress_bar.setMaximumHeight(4)
         layout.addWidget(self.progress_bar)
         
-        # Progress log
+        # Progress label (compact)
         self.progress_label = QLabel("Ready")
         self.progress_label.setWordWrap(True)
+        self.progress_label.setMaximumHeight(20)
+        self.progress_label.setStyleSheet("font-size: 10px; color: blue;")
         layout.addWidget(self.progress_label)
         
-        # Create tab widget
+        # Create tab widget - give it most of the space
         self.tabs = QTabWidget()
+        layout.addWidget(self.tabs, 1)  # Stretch factor for tabs
         
         # Log tab
         log_widget = QWidget()
         log_layout = QVBoxLayout(log_widget)
+        log_layout.setContentsMargins(2, 2, 2, 2)
         self.log_text = QTextEdit()
         self.log_text.setPlaceholderText("Processing log will appear here...")
         self.log_text.setReadOnly(True)
         log_layout.addWidget(self.log_text)
-        self.tabs.addTab(log_widget, "Processing Log")
+        self.tabs.addTab(log_widget, "Log")
         
         # Visualization tab
         self.comparison_viewer = ComparisonViewer()
-        self.tabs.addTab(self.comparison_viewer, "3D vs UV Visualization")
-        
-        layout.addWidget(self.tabs, 1)
+        self.tabs.addTab(self.comparison_viewer, "3D vs UV")
         
         # Status bar
         self.statusBar().showMessage("Ready to load OBJ file")
@@ -226,7 +230,7 @@ class ConfMapGUI(QMainWindow):
         if file_path:
             try:
                 self.input_file = file_path
-                self.input_label.setText(Path(file_path).name)
+                self.input_label.setText(f"Input: {Path(file_path).name}")
                 self.input_label.setToolTip(file_path)
                 
                 # Read and display the mesh immediately
@@ -234,8 +238,10 @@ class ConfMapGUI(QMainWindow):
                 self.current_vertices = vertices
                 self.current_faces = faces
                 
+                # Update stats
+                self.stats_label.setText(f"{len(vertices)} vertices, {len(faces)} faces")
+                
                 # Show initial mesh (without UVs yet)
-                # Create empty UV data for initial display
                 empty_uv_vertices = np.array([[0, 0]])
                 empty_uv_faces = []
                 self.comparison_viewer.set_mesh_data(vertices, faces, empty_uv_vertices, empty_uv_faces)
@@ -244,7 +250,7 @@ class ConfMapGUI(QMainWindow):
                 input_path = Path(file_path)
                 default_output = input_path.parent / f"{input_path.stem}_with_uv{input_path.suffix}"
                 self.output_file = str(default_output)
-                self.output_label.setText(default_output.name)
+                self.output_label.setText(f"Output: {default_output.name}")
                 self.output_label.setToolTip(str(default_output))
                 
                 self.output_btn.setEnabled(True)
@@ -277,7 +283,7 @@ class ConfMapGUI(QMainWindow):
         
         if file_path:
             self.output_file = file_path
-            self.output_label.setText(Path(file_path).name)
+            self.output_label.setText(f"Output: {Path(file_path).name}")
             self.output_label.setToolTip(file_path)
             self.statusBar().showMessage(f"Output set to: {file_path}")
             
@@ -329,6 +335,9 @@ class ConfMapGUI(QMainWindow):
         self.current_uv_vertices = uv_vertices
         self.current_uv_faces = uv_faces
         
+        # Update stats
+        self.stats_label.setText(f"{len(vertices)} vertices, {len(faces)} faces, {len(uv_vertices)} UV points")
+        
         # Update the comparison viewer with both 3D and UV data
         self.comparison_viewer.set_mesh_data(vertices, faces, uv_vertices, uv_faces)
         
@@ -354,8 +363,7 @@ class ConfMapGUI(QMainWindow):
         QMessageBox.information(self, "Success", 
                               f"3D mesh processed successfully!\n\n"
                               f"Input: {Path(input_path).name}\n"
-                              f"Output: {Path(output_path).name}\n\n"
-                              f"Switch to the '3D vs UV Visualization' tab to see the results!")
+                              f"Output: {Path(output_path).name}")
         
     def on_processing_error(self, error_msg):
         """Handle processing errors"""
