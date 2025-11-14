@@ -7,8 +7,10 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QHBoxLayout
                              QWidget, QSplitter, QMessageBox, QProgressBar,
                              QGroupBox, QComboBox, QCheckBox)
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
-from PyQt5.QtGui import QFont, QPixmap, QPainter
-import numpy as np
+from PyQt5.QtGui import QFont, QTextCursor
+
+# Import our minimal confmap implementation
+from minimal_confmap import BFF, SCP, AE, read_obj, write_obj
 
 class ConfMapWorker(QThread):
     """Worker thread for confmap processing to prevent GUI freezing"""
@@ -25,13 +27,7 @@ class ConfMapWorker(QThread):
     
     def run(self):
         try:
-            self.progress.emit("Importing confmap library...")
-            
-            # Import confmap components
-            from confmap.confmap import BFF, SCP, AE
-            from confmap.io_utils import read_obj, write_obj
-            
-            self.progress.emit(f"Reading OBJ file: {self.input_path}")
+            self.progress.emit("Reading OBJ file...")
             
             # Read the input OBJ file
             vertices, faces = read_obj(self.input_path)
@@ -55,32 +51,29 @@ class ConfMapWorker(QThread):
             
             # Generate the UV layout
             if self.generate_uv:
-                image = cm.layout()
+                result = cm.layout()
                 self.progress.emit("UV layout generated successfully")
                 
                 # Write output with UV coordinates
-                write_obj(self.output_path, cm.vertices, cm.faces, image.vertices, image.faces)
+                write_obj(self.output_path, vertices, faces, result.uv_vertices, result.uv_faces)
                 log_message = f"""Processing Complete!
 Input: {self.input_path}
 Output: {self.output_path}
 Method: {self.method}
-Original vertices: {len(vertices)}
-Original faces: {len(faces)}
-Processed vertices: {len(cm.vertices)}
-Processed faces: {len(cm.faces)}
-UV vertices: {len(image.vertices)}
-UV faces: {len(image.faces)}
+Vertices: {len(vertices)}
+Faces: {len(faces)}
+UV vertices: {len(result.uv_vertices)}
 
-The output file contains the original 3D mesh with added UV coordinates for texture mapping."""
+The output file contains the original 3D mesh with UV coordinates for texture mapping."""
             else:
-                # Just process without UV (for debugging)
-                write_obj(self.output_path, cm.vertices, cm.faces)
+                # Just write the original mesh (for debugging)
+                write_obj(self.output_path, vertices, faces)
                 log_message = f"""Processing Complete (No UV generated)
 Input: {self.input_path}
 Output: {self.output_path}
 Method: {self.method}
-Vertices: {len(cm.vertices)}
-Faces: {len(cm.faces)}"""
+Vertices: {len(vertices)}
+Faces: {len(faces)}"""
             
             self.finished.emit(self.input_path, self.output_path, log_message)
             
@@ -125,7 +118,7 @@ class ConfMapGUI(QMainWindow):
         method_layout.addWidget(QLabel("Conformal Mapping Method:"))
         self.method_combo = QComboBox()
         self.method_combo.addItems(["BFF", "SCP", "AE"])
-        self.method_combo.setToolTip("BFF: Boundary First Flattening\nSCP: Spectral Conformal Parameterization\nAE: Authalic Embedding")
+        self.method_combo.setToolTip("BFF: Boundary First Flattening (Recommended)\nSCP: Spectral Conformal Parameterization\nAE: Authalic Embedding")
         method_layout.addWidget(self.method_combo)
         method_layout.addStretch()
         options_layout.addLayout(method_layout)
