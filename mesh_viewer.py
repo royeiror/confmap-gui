@@ -1,5 +1,6 @@
 import numpy as np
-from PyQt5.QtWidgets import QOpenGLWidget, QVBoxLayout, QHBoxLayout, QWidget, QLabel, QSplitter
+from PyQt5.QtWidgets import (QOpenGLWidget, QVBoxLayout, QHBoxLayout, QWidget, 
+                             QLabel, QSplitter, QCheckBox)
 from PyQt5.QtCore import Qt, QPoint
 from PyQt5.QtGui import QMouseEvent, QFont
 from OpenGL.GL import *
