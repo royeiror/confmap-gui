@@ -5,28 +5,84 @@ from pathlib import Path
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, 
                              QPushButton, QTextEdit, QLabel, QFileDialog, 
                              QWidget, QSplitter, QMessageBox, QProgressBar,
-                             QGroupBox, QCheckBox, QComboBox)
+                             QGroupBox, QComboBox, QCheckBox)
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
-from PyQt5.QtGui import QFont
-
-# Import our simple confmap implementation
-from simple_confmap import from_string
+from PyQt5.QtGui import QFont, QPixmap, QPainter
+import numpy as np
 
 class ConfMapWorker(QThread):
     """Worker thread for confmap processing to prevent GUI freezing"""
-    finished = pyqtSignal(str, str)  # original, processed
+    finished = pyqtSignal(str, str, str)  # input_path, output_path, log
     error = pyqtSignal(str)
+    progress = pyqtSignal(str)
     
-    def __init__(self, config_text, output_format):
+    def __init__(self, input_path, output_path, method="BFF", generate_uv=True):
         super().__init__()
-        self.config_text = config_text
-        self.output_format = output_format
+        self.input_path = input_path
+        self.output_path = output_path
+        self.method = method
+        self.generate_uv = generate_uv
     
     def run(self):
         try:
-            # Process with our simple confmap
-            result = from_string(self.config_text, self.output_format)
-            self.finished.emit(self.config_text, result)
+            self.progress.emit("Importing confmap library...")
+            
+            # Import confmap components
+            from confmap.confmap import BFF, SCP, AE
+            from confmap.io_utils import read_obj, write_obj
+            
+            self.progress.emit(f"Reading OBJ file: {self.input_path}")
+            
+            # Read the input OBJ file
+            vertices, faces = read_obj(self.input_path)
+            
+            self.progress.emit(f"Loaded mesh: {len(vertices)} vertices, {len(faces)} faces")
+            
+            # Select the conformal mapping method
+            if self.method == "BFF":
+                self.progress.emit("Using BFF (Boundary First Flattening) method...")
+                cm = BFF(vertices, faces)
+            elif self.method == "SCP":
+                self.progress.emit("Using SCP (Spectral Conformal Parameterization) method...")
+                cm = SCP(vertices, faces)
+            elif self.method == "AE":
+                self.progress.emit("Using AE (Authalic Embedding) method...")
+                cm = AE(vertices, faces)
+            else:
+                raise ValueError(f"Unknown method: {self.method}")
+            
+            self.progress.emit("Computing conformal map...")
+            
+            # Generate the UV layout
+            if self.generate_uv:
+                image = cm.layout()
+                self.progress.emit("UV layout generated successfully")
+                
+                # Write output with UV coordinates
+                write_obj(self.output_path, cm.vertices, cm.faces, image.vertices, image.faces)
+                log_message = f"""Processing Complete!
+Input: {self.input_path}
+Output: {self.output_path}
+Method: {self.method}
+Original vertices: {len(vertices)}
+Original faces: {len(faces)}
+Processed vertices: {len(cm.vertices)}
+Processed faces: {len(cm.faces)}
+UV vertices: {len(image.vertices)}
+UV faces: {len(image.faces)}
+
+The output file contains the original 3D mesh with added UV coordinates for texture mapping."""
+            else:
+                # Just process without UV (for debugging)
+                write_obj(self.output_path, cm.vertices, cm.faces)
+                log_message = f"""Processing Complete (No UV generated)
+Input: {self.input_path}
+Output: {self.output_path}
+Method: {self.method}
+Vertices: {len(cm.vertices)}
+Faces: {len(cm.faces)}"""
+            
+            self.finished.emit(self.input_path, self.output_path, log_message)
             
         except Exception as e:
             self.error.emit(str(e))
@@ -34,11 +90,13 @@ class ConfMapWorker(QThread):
 class ConfMapGUI(QMainWindow):
     def __init__(self):
         super().__init__()
+        self.input_file = None
+        self.output_file = None
         self.init_ui()
         
     def init_ui(self):
-        self.setWindowTitle("ConfMap Processor - Configuration File Converter")
-        self.setGeometry(100, 100, 1200, 800)
+        self.setWindowTitle("ConfMap Processor - 3D Mesh Conformal Mapping")
+        self.setGeometry(100, 100, 1000, 700)
         
         # Central widget
         central_widget = QWidget()
@@ -48,210 +106,237 @@ class ConfMapGUI(QMainWindow):
         layout = QVBoxLayout(central_widget)
         
         # Title
-        title = QLabel("ConfMap Configuration File Processor")
+        title = QLabel("3D Mesh Conformal Map Processor")
         title.setFont(QFont("Arial", 16, QFont.Bold))
         title.setAlignment(Qt.AlignCenter)
         layout.addWidget(title)
         
         # Description
-        desc = QLabel("Convert between different configuration file formats (YAML, JSON, INI, etc.)")
+        desc = QLabel("Process 3D OBJ files to generate conformal maps for UV unwrapping")
         desc.setAlignment(Qt.AlignCenter)
         layout.addWidget(desc)
         
         # Options group
-        options_group = QGroupBox("Conversion Options")
-        options_layout = QHBoxLayout(options_group)
+        options_group = QGroupBox("Processing Options")
+        options_layout = QVBoxLayout(options_group)
         
-        options_layout.addWidget(QLabel("Output Format:"))
-        self.format_combo = QComboBox()
-        self.format_combo.addItems(["YAML", "JSON", "INI"])
-        self.format_combo.setCurrentText("YAML")
-        options_layout.addWidget(self.format_combo)
+        # Method selection
+        method_layout = QHBoxLayout()
+        method_layout.addWidget(QLabel("Conformal Mapping Method:"))
+        self.method_combo = QComboBox()
+        self.method_combo.addItems(["BFF", "SCP", "AE"])
+        self.method_combo.setToolTip("BFF: Boundary First Flattening\nSCP: Spectral Conformal Parameterization\nAE: Authalic Embedding")
+        method_layout.addWidget(self.method_combo)
+        method_layout.addStretch()
+        options_layout.addLayout(method_layout)
         
-        options_layout.addStretch()
+        # UV generation option
+        self.uv_checkbox = QCheckBox("Generate UV coordinates")
+        self.uv_checkbox.setChecked(True)
+        self.uv_checkbox.setToolTip("Generate UV coordinates for texture mapping")
+        options_layout.addWidget(self.uv_checkbox)
+        
         layout.addWidget(options_group)
         
         # File selection buttons
         file_layout = QHBoxLayout()
         
-        self.load_btn = QPushButton("Load Configuration File")
+        self.load_btn = QPushButton("Load OBJ File")
         self.load_btn.clicked.connect(self.load_file)
+        self.load_btn.setStyleSheet("QPushButton { font-weight: bold; }")
         file_layout.addWidget(self.load_btn)
         
-        self.save_btn = QPushButton("Save Processed Result")
-        self.save_btn.clicked.connect(self.save_file)
-        self.save_btn.setEnabled(False)
-        file_layout.addWidget(self.save_btn)
+        self.output_btn = QPushButton("Set Output Location")
+        self.output_btn.clicked.connect(self.set_output)
+        self.output_btn.setEnabled(False)
+        file_layout.addWidget(self.output_btn)
         
-        self.process_btn = QPushButton("Process Configuration")
-        self.process_btn.clicked.connect(self.process_config)
+        self.process_btn = QPushButton("Process Mesh")
+        self.process_btn.clicked.connect(self.process_mesh)
         self.process_btn.setEnabled(False)
+        self.process_btn.setStyleSheet("QPushButton { font-weight: bold; background-color: #4CAF50; color: white; }")
         file_layout.addWidget(self.process_btn)
         
         layout.addLayout(file_layout)
+        
+        # File info
+        info_layout = QHBoxLayout()
+        
+        self.input_label = QLabel("No file selected")
+        self.input_label.setWordWrap(True)
+        info_layout.addWidget(QLabel("Input:"))
+        info_layout.addWidget(self.input_label, 1)
+        
+        self.output_label = QLabel("No output location set")
+        self.output_label.setWordWrap(True)
+        info_layout.addWidget(QLabel("Output:"))
+        info_layout.addWidget(self.output_label, 1)
+        
+        layout.addLayout(info_layout)
         
         # Progress bar
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
         layout.addWidget(self.progress_bar)
         
-        # Splitter for before/after views
-        splitter = QSplitter(Qt.Horizontal)
+        # Progress log
+        self.progress_label = QLabel("Ready")
+        self.progress_label.setWordWrap(True)
+        layout.addWidget(self.progress_label)
         
-        # Left panel - original
-        left_widget = QWidget()
-        left_layout = QVBoxLayout(left_widget)
-        left_layout.addWidget(QLabel("Original Configuration:"))
-        self.original_text = QTextEdit()
-        self.original_text.setPlaceholderText("Original configuration will appear here...\nSupported formats: YAML, JSON, INI")
-        left_layout.addWidget(self.original_text)
-        splitter.addWidget(left_widget)
-        
-        # Right panel - processed
-        right_widget = QWidget()
-        right_layout = QVBoxLayout(right_widget)
-        right_layout.addWidget(QLabel("Processed Configuration:"))
-        self.processed_text = QTextEdit()
-        self.processed_text.setPlaceholderText("Processed configuration will appear here...")
-        self.processed_text.setReadOnly(True)
-        right_layout.addWidget(self.processed_text)
-        splitter.addWidget(right_widget)
-        
-        splitter.setSizes([600, 600])
-        layout.addWidget(splitter, 1)
+        # Log output
+        log_group = QGroupBox("Processing Log")
+        log_layout = QVBoxLayout(log_group)
+        self.log_text = QTextEdit()
+        self.log_text.setPlaceholderText("Processing log will appear here...")
+        self.log_text.setReadOnly(True)
+        log_layout.addWidget(self.log_text)
+        layout.addWidget(log_group, 1)
         
         # Status bar
-        self.statusBar().showMessage("Ready to load configuration file")
+        self.statusBar().showMessage("Ready to load OBJ file")
         
         # Initialize worker
         self.worker = None
-        self.current_processed_content = ""
         
     def load_file(self):
-        """Load a configuration file"""
+        """Load an OBJ file"""
         file_path, _ = QFileDialog.getOpenFileName(
             self,
-            "Select Configuration File",
+            "Select OBJ File",
             "",
-            "Configuration Files (*.yaml *.yml *.json *.ini *.conf *.cfg);;All Files (*)"
+            "3D Model Files (*.obj);;All Files (*)"
         )
         
         if file_path:
-            try:
-                # Try multiple encodings to handle various file types
-                encodings = ['utf-8', 'utf-16', 'latin-1', 'cp1252']
-                content = None
-                
-                for encoding in encodings:
-                    try:
-                        with open(file_path, 'r', encoding=encoding) as f:
-                            content = f.read()
-                        break
-                    except UnicodeDecodeError:
-                        continue
-                
-                if content is None:
-                    # If all encodings fail, try binary read as last resort
-                    with open(file_path, 'rb') as f:
-                        content = f.read().decode('utf-8', errors='replace')
-                
-                self.original_text.setText(content)
-                self.process_btn.setEnabled(True)
-                self.save_btn.setEnabled(False)
-                self.statusBar().showMessage(f"Loaded: {file_path}")
-                
-            except Exception as e:
-                QMessageBox.critical(self, "Error", f"Could not read file: {str(e)}")
-    
-    def process_config(self):
-        """Process the configuration using confmap"""
-        content = self.original_text.toPlainText().strip()
-        if not content:
-            QMessageBox.warning(self, "Warning", "No content to process!")
+            self.input_file = file_path
+            self.input_label.setText(Path(file_path).name)
+            self.input_label.setToolTip(file_path)
+            
+            # Set default output path
+            input_path = Path(file_path)
+            default_output = input_path.parent / f"{input_path.stem}_with_uv{input_path.suffix}"
+            self.output_file = str(default_output)
+            self.output_label.setText(default_output.name)
+            self.output_label.setToolTip(str(default_output))
+            
+            self.output_btn.setEnabled(True)
+            self.process_btn.setEnabled(True)
+            self.statusBar().showMessage(f"Loaded: {file_path}")
+            
+            # Clear previous log
+            self.log_text.clear()
+            self.log_text.append(f"Loaded OBJ file: {file_path}")
+            
+    def set_output(self):
+        """Set output file location"""
+        if not self.input_file:
+            return
+            
+        default_name = Path(self.input_file).stem + "_with_uv.obj"
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Processed OBJ File",
+            str(Path(self.input_file).parent / default_name),
+            "OBJ Files (*.obj);;All Files (*)"
+        )
+        
+        if file_path:
+            self.output_file = file_path
+            self.output_label.setText(Path(file_path).name)
+            self.output_label.setToolTip(file_path)
+            self.statusBar().showMessage(f"Output set to: {file_path}")
+            
+    def process_mesh(self):
+        """Process the 3D mesh using confmap"""
+        if not self.input_file or not self.output_file:
+            QMessageBox.warning(self, "Warning", "Please select both input and output files!")
+            return
+        
+        if not os.path.exists(self.input_file):
+            QMessageBox.critical(self, "Error", "Input file does not exist!")
             return
         
         # Disable buttons during processing
         self.process_btn.setEnabled(False)
         self.load_btn.setEnabled(False)
+        self.output_btn.setEnabled(False)
         self.progress_bar.setVisible(True)
         self.progress_bar.setRange(0, 0)  # Indeterminate progress
         
-        # Get output format
-        output_format = self.format_combo.currentText().lower()
+        # Get processing options
+        method = self.method_combo.currentText()
+        generate_uv = self.uv_checkbox.isChecked()
         
         # Start worker thread
-        self.worker = ConfMapWorker(content, output_format)
+        self.worker = ConfMapWorker(self.input_file, self.output_file, method, generate_uv)
         self.worker.finished.connect(self.on_processing_finished)
         self.worker.error.connect(self.on_processing_error)
+        self.worker.progress.connect(self.on_progress_update)
         self.worker.start()
         
-        self.statusBar().showMessage("Processing configuration...")
-    
-    def on_processing_finished(self, original, processed):
-        """Handle successful processing"""
-        self.processed_text.setText(processed)
-        self.current_processed_content = processed
+        self.statusBar().showMessage("Processing 3D mesh...")
+        self.log_text.append(f"Starting processing with {method} method...")
         
+    def on_progress_update(self, message):
+        """Update progress messages"""
+        self.progress_label.setText(message)
+        self.log_text.append(f"• {message}")
+        # Auto-scroll to bottom
+        cursor = self.log_text.textCursor()
+        cursor.movePosition(QTextCursor.End)
+        self.log_text.setTextCursor(cursor)
+        
+    def on_processing_finished(self, input_path, output_path, log_message):
+        """Handle successful processing"""
         # Re-enable buttons
         self.process_btn.setEnabled(True)
         self.load_btn.setEnabled(True)
-        self.save_btn.setEnabled(True)
+        self.output_btn.setEnabled(True)
         self.progress_bar.setVisible(False)
         
         self.statusBar().showMessage("Processing completed successfully!")
-    
+        self.progress_label.setText("Processing completed!")
+        
+        # Add final log message
+        self.log_text.append("\n" + "="*50)
+        self.log_text.append("PROCESSING COMPLETED SUCCESSFULLY!")
+        self.log_text.append("="*50)
+        self.log_text.append(log_message)
+        
+        # Show success message
+        QMessageBox.information(self, "Success", 
+                              f"3D mesh processed successfully!\n\n"
+                              f"Input: {Path(input_path).name}\n"
+                              f"Output: {Path(output_path).name}\n\n"
+                              f"The processed file has been saved with conformal mapping.")
+        
     def on_processing_error(self, error_msg):
         """Handle processing errors"""
         # Re-enable buttons
         self.process_btn.setEnabled(True)
         self.load_btn.setEnabled(True)
+        self.output_btn.setEnabled(True)
         self.progress_bar.setVisible(False)
         
         self.statusBar().showMessage(f"Error: {error_msg}")
+        self.progress_label.setText("Processing failed!")
+        
+        # Add error to log
+        self.log_text.append("\n" + "="*50)
+        self.log_text.append("PROCESSING FAILED!")
+        self.log_text.append("="*50)
+        self.log_text.append(f"Error: {error_msg}")
         
         # Show error message
         QMessageBox.critical(self, "Processing Error", 
                            f"An error occurred during processing:\n{error_msg}")
-    
-    def save_file(self):
-        """Save the processed configuration"""
-        if not self.current_processed_content:
-            QMessageBox.warning(self, "Warning", "No processed content to save!")
-            return
-        
-        # Determine file extension based on output format
-        format_extensions = {
-            'yaml': '.yaml',
-            'json': '.json', 
-            'ini': '.ini'
-        }
-        ext = format_extensions.get(self.format_combo.currentText().lower(), '.txt')
-        
-        file_path, _ = QFileDialog.getSaveFileName(
-            self,
-            "Save Processed Configuration",
-            "",
-            f"Configuration Files (*{ext});;All Files (*)",
-            options=QFileDialog.Options()
-        )
-        
-        if file_path:
-            try:
-                # Ensure proper encoding for non-ANSI characters
-                with open(file_path, 'w', encoding='utf-8') as f:
-                    f.write(self.current_processed_content)
-                
-                self.statusBar().showMessage(f"Saved: {file_path}")
-                QMessageBox.information(self, "Success", f"File saved successfully!\n{file_path}")
-                
-            except Exception as e:
-                QMessageBox.critical(self, "Error", f"Could not save file: {str(e)}")
 
 def main():
     app = QApplication(sys.argv)
     
     # Set application properties
-    app.setApplicationName("ConfMap Processor")
+    app.setApplicationName("ConfMap 3D Processor")
     app.setApplicationVersion("1.0")
     app.setOrganizationName("ConfMap")
     
