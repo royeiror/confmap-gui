@@ -2,7 +2,7 @@ import numpy as np
 from PyQt5.QtWidgets import (QOpenGLWidget, QVBoxLayout, QHBoxLayout, QWidget, 
                              QLabel, QSplitter, QCheckBox)
 from PyQt5.QtCore import Qt, QPoint
-from PyQt5.QtGui import QMouseEvent, QFont
+from PyQt5.QtGui import QMouseEvent
 from OpenGL.GL import *
 from OpenGL.GLU import *
 
@@ -208,45 +208,61 @@ class ComparisonViewer(QWidget):
         
     def init_ui(self):
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(2, 2, 2, 2)  # Minimize margins
+        layout.setSpacing(4)  # Minimize spacing
         
-        # Title
-        title = QLabel("Mesh Visualization - 3D Model vs UV Layout")
-        title.setFont(QFont("Arial", 12, QFont.Bold))
-        title.setAlignment(Qt.AlignCenter)
-        layout.addWidget(title)
-        
-        # Splitter for side-by-side view
+        # Splitter for side-by-side view - use maximum space
         splitter = QSplitter(Qt.Horizontal)
         
-        # Left side - 3D mesh
+        # Left side - 3D mesh with minimal label
         left_widget = QWidget()
         left_layout = QVBoxLayout(left_widget)
-        left_layout.addWidget(QLabel("3D Mesh"))
+        left_layout.setContentsMargins(2, 2, 2, 2)
+        left_layout.setSpacing(2)
+        
+        left_label = QLabel("3D Mesh")
+        left_label.setMaximumHeight(15)  # Very small label
+        left_label.setAlignment(Qt.AlignCenter)
+        left_layout.addWidget(left_label)
+        
         self.mesh_viewer = MeshViewer3D()
         left_layout.addWidget(self.mesh_viewer)
         splitter.addWidget(left_widget)
         
-        # Right side - UV layout
+        # Right side - UV layout with minimal label
         right_widget = QWidget()
         right_layout = QVBoxLayout(right_widget)
-        right_layout.addWidget(QLabel("UV Layout"))
+        right_layout.setContentsMargins(2, 2, 2, 2)
+        right_layout.setSpacing(2)
+        
+        right_label = QLabel("UV Layout")
+        right_label.setMaximumHeight(15)  # Very small label
+        right_label.setAlignment(Qt.AlignCenter)
+        right_layout.addWidget(right_label)
+        
         self.uv_viewer = UVLayoutViewer()
         right_layout.addWidget(self.uv_viewer)
         splitter.addWidget(right_widget)
         
-        # Set equal sizes
+        # Set equal sizes and make splitter stretch
         splitter.setSizes([500, 500])
-        layout.addWidget(splitter)
+        layout.addWidget(splitter, 1)  # Give splitter stretch factor
         
-        # Controls
+        # Minimal controls at the bottom
         controls_layout = QHBoxLayout()
-        controls_layout.addWidget(QLabel("Display:"))
+        controls_layout.setContentsMargins(2, 2, 2, 2)
         
         self.wireframe_checkbox = QCheckBox("Wireframe")
         self.wireframe_checkbox.stateChanged.connect(self.on_wireframe_changed)
         controls_layout.addWidget(self.wireframe_checkbox)
         
         controls_layout.addStretch()
+        
+        # Add help text
+        help_label = QLabel("Drag to rotate 3D view • Wheel to zoom")
+        help_label.setStyleSheet("color: gray; font-size: 10px;")
+        controls_layout.addWidget(help_label)
+        
         layout.addLayout(controls_layout)
         
     def set_mesh_data(self, vertices, faces, uv_vertices, uv_faces):
