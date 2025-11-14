@@ -1,6 +1,6 @@
 import numpy as np
 from PyQt5.QtWidgets import (QOpenGLWidget, QVBoxLayout, QHBoxLayout, QWidget, 
-                             QLabel, QSplitter, QCheckBox)
+                             QLabel, QSplitter, QCheckBox, QPushButton)
 from PyQt5.QtCore import Qt, QPoint
 from PyQt5.QtGui import QMouseEvent
 from OpenGL.GL import *
@@ -210,9 +210,6 @@ class UVLayoutViewer(QOpenGLWidget):
         else:
             glPolygonMode(GL_FRONT_AND_BACK, GL_FILL)
             
-            # Use different colors for different faces to see the structure
-            glColor3f(0.9, 0.8, 0.6)  # Default color
-            
         glBegin(GL_TRIANGLES)
         for i, face in enumerate(self.uv_faces):
             if len(face) == 3:  # Triangle
@@ -224,6 +221,8 @@ class UVLayoutViewer(QOpenGLWidget):
                     g = 0.6 + 0.3 * ((hue + 0.333) % 0.333)
                     b = 0.6 + 0.3 * ((hue + 0.666) % 0.333)
                     glColor3f(r, g, b)
+                else:
+                    glColor3f(0.8, 0.2, 0.2)  # Red for wireframe
                 
                 for uv_idx in face:
                     if uv_idx < len(self.uv_vertices):
