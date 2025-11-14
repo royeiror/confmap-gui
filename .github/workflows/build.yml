@@ -28,6 +28,7 @@ jobs:
         pyinstaller --name=ConfMapProcessor `
                     --windowed `
                     --onefile `
+                    --add-data="simple_confmap.py;." `
                     --clean `
                     --noconfirm `
                     confmap_gui.py
