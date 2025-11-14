@@ -11,7 +11,7 @@ from PyQt5.QtGui import QFont, QTextCursor
 
 # Import our minimal confmap implementation
 from minimal_confmap import BFF, SCP, AE, read_obj, write_obj
-from mesh_viewer import MeshViewer
+from mesh_viewer import ComparisonViewer
 
 class ConfMapWorker(QThread):
     """Worker thread for confmap processing to prevent GUI freezing"""
@@ -101,7 +101,7 @@ class ConfMapGUI(QMainWindow):
         
     def init_ui(self):
         self.setWindowTitle("ConfMap Processor - 3D Mesh Conformal Mapping")
-        self.setGeometry(100, 100, 1400, 900)
+        self.setGeometry(100, 100, 1600, 900)
         
         # Central widget
         central_widget = QWidget()
@@ -189,7 +189,7 @@ class ConfMapGUI(QMainWindow):
         self.progress_label.setWordWrap(True)
         layout.addWidget(self.progress_label)
         
-        # Create tab widget for visualization
+        # Create tab widget
         self.tabs = QTabWidget()
         
         # Log tab
@@ -202,30 +202,8 @@ class ConfMapGUI(QMainWindow):
         self.tabs.addTab(log_widget, "Processing Log")
         
         # Visualization tab
-        vis_widget = QWidget()
-        vis_layout = QVBoxLayout(vis_widget)
-        
-        # Visualization controls
-        vis_controls_layout = QHBoxLayout()
-        
-        vis_controls_layout.addWidget(QLabel("View Mode:"))
-        self.view_mode_combo = QComboBox()
-        self.view_mode_combo.addItems(["3D Mesh", "UV Layout"])
-        self.view_mode_combo.currentTextChanged.connect(self.on_view_mode_changed)
-        vis_controls_layout.addWidget(self.view_mode_combo)
-        
-        self.wireframe_checkbox = QCheckBox("Wireframe")
-        self.wireframe_checkbox.stateChanged.connect(self.on_wireframe_changed)
-        vis_controls_layout.addWidget(self.wireframe_checkbox)
-        
-        vis_controls_layout.addStretch()
-        vis_layout.addLayout(vis_controls_layout)
-        
-        # Create mesh viewer
-        self.mesh_viewer = MeshViewer()
-        vis_layout.addWidget(self.mesh_viewer, 1)
-        
-        self.tabs.addTab(vis_widget, "3D Visualization")
+        self.comparison_viewer = ComparisonViewer()
+        self.tabs.addTab(self.comparison_viewer, "3D vs UV Visualization")
         
         layout.addWidget(self.tabs, 1)
         
@@ -234,14 +212,6 @@ class ConfMapGUI(QMainWindow):
         
         # Initialize worker
         self.worker = None
-        
-    def on_view_mode_changed(self, mode):
-        """Handle view mode change"""
-        self.mesh_viewer.set_display_mode(mode == "3D Mesh")
-        
-    def on_wireframe_changed(self, state):
-        """Handle wireframe toggle"""
-        self.mesh_viewer.set_wireframe(state == Qt.Checked)
         
     def load_file(self):
         """Load an OBJ file"""
@@ -262,7 +232,9 @@ class ConfMapGUI(QMainWindow):
                 vertices, faces = read_obj(file_path)
                 self.current_vertices = vertices
                 self.current_faces = faces
-                self.mesh_viewer.set_mesh(vertices, faces)
+                
+                # Show initial mesh (without UVs yet)
+                self.comparison_viewer.set_mesh_data(vertices, faces, np.array([[0,0]]), [])
                 
                 # Set default output path
                 input_path = Path(file_path)
@@ -353,8 +325,8 @@ class ConfMapGUI(QMainWindow):
         self.current_uv_vertices = uv_vertices
         self.current_uv_faces = uv_faces
         
-        # Update the mesh viewer with both 3D and UV data
-        self.mesh_viewer.set_mesh(vertices, faces, uv_vertices, uv_faces)
+        # Update the comparison viewer with both 3D and UV data
+        self.comparison_viewer.set_mesh_data(vertices, faces, uv_vertices, uv_faces)
         
         # Re-enable buttons
         self.process_btn.setEnabled(True)
@@ -379,7 +351,7 @@ class ConfMapGUI(QMainWindow):
                               f"3D mesh processed successfully!\n\n"
                               f"Input: {Path(input_path).name}\n"
                               f"Output: {Path(output_path).name}\n\n"
-                              f"Switch to the '3D Visualization' tab to see the results!")
+                              f"Switch to the '3D vs UV Visualization' tab to see the results!")
         
     def on_processing_error(self, error_msg):
         """Handle processing errors"""
