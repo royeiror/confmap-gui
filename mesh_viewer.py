@@ -1,6 +1,6 @@
 import numpy as np
 from PyQt5.QtWidgets import (QOpenGLWidget, QVBoxLayout, QHBoxLayout, QWidget, 
-                             QLabel, QSplitter, QCheckBox, QPushButton)
+                             QLabel, QSplitter, QCheckBox, QPushButton, QComboBox)
 from PyQt5.QtCore import Qt, QPoint
 from PyQt5.QtGui import QMouseEvent
 from OpenGL.GL import *
@@ -25,7 +25,7 @@ class MeshViewer3D(QOpenGLWidget):
         
         # Projection settings
         self.near_plane = 0.1
-        self.far_plane = 1000.0  # Much larger far plane
+        self.far_plane = 1000.0
         
     def set_mesh(self, vertices, faces):
         """Set mesh data for display"""
@@ -35,11 +35,8 @@ class MeshViewer3D(QOpenGLWidget):
         # Calculate mesh bounds for auto-zoom
         if vertices is not None and len(vertices) > 0:
             self.mesh_center = np.mean(vertices, axis=0)
-            # Calculate the radius as the maximum distance from center
             distances = np.linalg.norm(vertices - self.mesh_center, axis=1)
             self.mesh_radius = np.max(distances) if len(distances) > 0 else 1.0
-            
-            # Auto-adjust zoom to fit mesh with some padding
             self.zoom = -self.mesh_radius * 3.0
             
         self.update()
@@ -59,12 +56,11 @@ class MeshViewer3D(QOpenGLWidget):
         glLightfv(GL_LIGHT0, GL_DIFFUSE, [0.8, 0.8, 0.8, 1])
         glLightfv(GL_LIGHT0, GL_SPECULAR, [0.5, 0.5, 0.5, 1])
         
-        # Set up secondary lighting for better depth perception
+        # Set up secondary lighting
         glLightfv(GL_LIGHT1, GL_POSITION, [-2, -1, -1, 1])
         glLightfv(GL_LIGHT1, GL_DIFFUSE, [0.3, 0.3, 0.3, 1])
         glLightfv(GL_LIGHT1, GL_SPECULAR, [0.2, 0.2, 0.2, 1])
         
-        # Set material properties
         glMaterialfv(GL_FRONT, GL_SPECULAR, [0.5, 0.5, 0.5, 1])
         glMaterialf(GL_FRONT, GL_SHININESS, 50.0)
         
@@ -76,7 +72,6 @@ class MeshViewer3D(QOpenGLWidget):
         glMatrixMode(GL_PROJECTION)
         glLoadIdentity()
         aspect = width / float(height) if height != 0 else 1.0
-        # Use much larger far plane for unlimited zoom out
         gluPerspective(45, aspect, self.near_plane, self.far_plane)
         glMatrixMode(GL_MODELVIEW)
         
@@ -85,12 +80,10 @@ class MeshViewer3D(QOpenGLWidget):
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
         glLoadIdentity()
         
-        # Camera position - no limits on zoom
         glTranslatef(0, 0, self.zoom)
         glRotatef(self.rotation_x, 1, 0, 0)
         glRotatef(self.rotation_y, 0, 1, 0)
         
-        # Center the mesh
         if self.vertices is not None and len(self.vertices) > 0:
             glTranslatef(-self.mesh_center[0], -self.mesh_center[1], -self.mesh_center[2])
         
@@ -107,7 +100,6 @@ class MeshViewer3D(QOpenGLWidget):
         glBegin(GL_TRIANGLES)
         for face in self.faces:
             if len(face) == 3:
-                # Calculate face normal for better lighting
                 v0 = self.vertices[face[0]]
                 v1 = self.vertices[face[1]]
                 v2 = self.vertices[face[2]]
@@ -138,17 +130,14 @@ class MeshViewer3D(QOpenGLWidget):
                         glVertex3fv(self.vertices[vertex_idx])
             glEnd()
         
-        # Reset to defaults
         glPolygonMode(GL_FRONT_AND_BACK, GL_FILL)
         glEnable(GL_LIGHTING)
         glLineWidth(1.0)
         
     def mousePressEvent(self, event: QMouseEvent):
-        """Handle mouse press for rotation"""
         self.last_pos = event.pos()
         
     def mouseMoveEvent(self, event: QMouseEvent):
-        """Handle mouse drag for rotation"""
         dx = event.x() - self.last_pos.x()
         dy = event.y() - self.last_pos.y()
         
@@ -160,13 +149,11 @@ class MeshViewer3D(QOpenGLWidget):
         self.last_pos = event.pos()
         
     def wheelEvent(self, event):
-        """Handle mouse wheel for zoom - NO LIMITS"""
         zoom_speed = max(0.1, abs(self.zoom) * 0.05)
         self.zoom += event.angleDelta().y() * 0.001 * zoom_speed
         self.update()
         
     def set_wireframe_overlay(self, wireframe):
-        """Set wireframe overlay mode"""
         self.wireframe_overlay = wireframe
         self.update()
 
@@ -175,28 +162,105 @@ class UVLayoutViewer(QOpenGLWidget):
         super().__init__(parent)
         self.uv_vertices = None
         self.uv_faces = None
-        self.wireframe = True  # Default to wireframe for UV view
+        self.wireframe = True
+        self.display_mode = "wireframe"  # "wireframe", "colored", "heatmap"
+        self.distortion = None  # Conformal distortion values per face
         
-    def set_uv_layout(self, uv_vertices, uv_faces):
-        """Set UV layout data for display"""
+    def set_uv_layout(self, uv_vertices, uv_faces, vertices_3d=None, faces_3d=None):
+        """Set UV layout data and compute distortion if 3D data is provided"""
         self.uv_vertices = uv_vertices
         self.uv_faces = uv_faces
+        
+        # Compute conformal distortion if 3D data is available
+        if vertices_3d is not None and faces_3d is not None:
+            self.compute_conformal_distortion(vertices_3d, faces_3d, uv_vertices, uv_faces)
+        
         self.update()
+    
+    def compute_conformal_distortion(self, vertices_3d, faces_3d, uv_vertices, uv_faces):
+        """Compute conformal distortion for each face"""
+        self.distortion = []
+        
+        for i, face in enumerate(faces_3d):
+            if len(face) != 3:
+                self.distortion.append(0.0)
+                continue
+                
+            # Get 3D triangle vertices
+            v0_3d, v1_3d, v2_3d = vertices_3d[face[0]], vertices_3d[face[1]], vertices_3d[face[2]]
+            
+            # Get UV triangle vertices
+            if i < len(uv_faces):
+                uv_face = uv_faces[i]
+            else:
+                uv_face = face
+                
+            uv0, uv1, uv2 = uv_vertices[uv_face[0]], uv_vertices[uv_face[1]], uv_vertices[uv_face[2]]
+            
+            # Compute edge vectors in 3D
+            e1_3d = v1_3d - v0_3d
+            e2_3d = v2_3d - v0_3d
+            
+            # Compute edge vectors in UV
+            e1_uv = uv1 - uv0
+            e2_uv = uv2 - uv0
+            
+            # Compute Jacobian matrix of the mapping
+            # Solve: [e1_uv, e2_uv] = J * [e1_3d, e2_3d]
+            # This is a simplified 2D to 2D approximation
+            A = np.column_stack([e1_3d[:2], e2_3d[:2]])  # Use only x,y coordinates
+            b_uv1 = e1_uv
+            b_uv2 = e2_uv
+            
+            try:
+                # Compute Jacobian using least squares
+                J1 = np.linalg.lstsq(A, b_uv1, rcond=None)[0]
+                J2 = np.linalg.lstsq(A, b_uv2, rcond=None)[0]
+                J = np.array([J1, J2])
+                
+                # Compute singular values of Jacobian
+                U, s, Vt = np.linalg.svd(J)
+                
+                # Conformal distortion: max(singular value) / min(singular value)
+                if len(s) >= 2 and s[1] > 1e-10:
+                    distortion = s[0] / s[1]
+                else:
+                    distortion = 1.0
+                    
+                self.distortion.append(distortion)
+                
+            except:
+                self.distortion.append(1.0)
+    
+    def get_heatmap_color(self, value, min_val=1.0, max_val=3.0):
+        """Convert distortion value to heatmap color (blue -> green -> red)"""
+        # Normalize value to [0,1] range
+        normalized = (value - min_val) / (max_val - min_val)
+        normalized = max(0.0, min(1.0, normalized))
+        
+        if normalized < 0.5:
+            # Blue to green
+            r = 0.0
+            g = normalized * 2.0
+            b = 1.0 - normalized * 2.0
+        else:
+            # Green to red
+            r = (normalized - 0.5) * 2.0
+            g = 1.0 - (normalized - 0.5) * 2.0
+            b = 0.0
+            
+        return r, g, b
         
     def initializeGL(self):
-        """Initialize OpenGL"""
         glEnable(GL_DEPTH_TEST)
         glDisable(GL_LIGHTING)
-        glClearColor(1.0, 1.0, 1.0, 1.0)  # White background
+        glClearColor(1.0, 1.0, 1.0, 1.0)
         
     def resizeGL(self, width, height):
-        """Handle window resize"""
         glViewport(0, 0, width, height)
         glMatrixMode(GL_PROJECTION)
         glLoadIdentity()
         
-        # Orthographic projection for 2D UV space
-        # Show the entire [0,1] UV space with some padding
         padding = 0.1
         aspect = width / float(height) if height != 0 else 1.0
         
@@ -208,7 +272,6 @@ class UVLayoutViewer(QOpenGLWidget):
         glMatrixMode(GL_MODELVIEW)
         
     def paintGL(self):
-        """Render the UV layout"""
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
         glLoadIdentity()
         
@@ -217,46 +280,62 @@ class UVLayoutViewer(QOpenGLWidget):
             self.draw_uv_boundary()
                 
     def draw_uv_layout(self):
-        """Draw the UV layout"""
         if self.uv_vertices is None or self.uv_faces is None:
             return
             
-        if self.wireframe:
-            # Wireframe mode - show edges clearly
+        if self.display_mode == "wireframe":
             glPolygonMode(GL_FRONT_AND_BACK, GL_LINE)
-            glColor3f(0.2, 0.2, 0.8)  # Blue wireframe
+            glColor3f(0.2, 0.2, 0.8)
             glLineWidth(1.5)
-        else:
-            # Filled mode with different colors per face
+            
+            glBegin(GL_TRIANGLES)
+            for i, face in enumerate(self.uv_faces):
+                if len(face) == 3:
+                    for vertex_idx in face:
+                        if vertex_idx < len(self.uv_vertices):
+                            uv = self.uv_vertices[vertex_idx]
+                            glVertex3f(uv[0], uv[1], 0)
+            glEnd()
+            
+        elif self.display_mode == "colored":
             glPolygonMode(GL_FRONT_AND_BACK, GL_FILL)
-
-        glBegin(GL_TRIANGLES)
-        for i, face in enumerate(self.uv_faces):
-            if len(face) == 3:  # Triangle
-                if not self.wireframe:
-                    # Create a color based on face index to differentiate faces
-                    hue = (i * 0.6180339887) % 1.0  # Golden ratio for distribution
+            
+            glBegin(GL_TRIANGLES)
+            for i, face in enumerate(self.uv_faces):
+                if len(face) == 3:
+                    # Different color for each face
+                    hue = (i * 0.6180339887) % 1.0
                     r = 0.6 + 0.3 * ((hue + 0.0) % 1.0)
                     g = 0.6 + 0.3 * ((hue + 0.333) % 1.0)
                     b = 0.6 + 0.3 * ((hue + 0.666) % 1.0)
                     glColor3f(r, g, b)
-                else:
-                    glColor3f(0.2, 0.2, 0.8)  # Consistent color for wireframe
-                
-                # Draw the triangle - ensure we have valid UV indices
-                for vertex_idx in face:
-                    if vertex_idx < len(self.uv_vertices):
-                        uv = self.uv_vertices[vertex_idx]
-                        glVertex3f(uv[0], uv[1], 0)
-        glEnd()
+                    
+                    for vertex_idx in face:
+                        if vertex_idx < len(self.uv_vertices):
+                            uv = self.uv_vertices[vertex_idx]
+                            glVertex3f(uv[0], uv[1], 0)
+            glEnd()
+            
+        elif self.display_mode == "heatmap" and self.distortion is not None:
+            glPolygonMode(GL_FRONT_AND_BACK, GL_FILL)
+            
+            glBegin(GL_TRIANGLES)
+            for i, face in enumerate(self.uv_faces):
+                if len(face) == 3 and i < len(self.distortion):
+                    # Heatmap color based on distortion
+                    r, g, b = self.get_heatmap_color(self.distortion[i])
+                    glColor3f(r, g, b)
+                    
+                    for vertex_idx in face:
+                        if vertex_idx < len(self.uv_vertices):
+                            uv = self.uv_vertices[vertex_idx]
+                            glVertex3f(uv[0], uv[1], 0)
+            glEnd()
         
-        # Reset to defaults
         glPolygonMode(GL_FRONT_AND_BACK, GL_FILL)
         glLineWidth(1.0)
         
     def draw_uv_boundary(self):
-        """Draw UV space boundary and grid"""
-        # Draw the [0,1] boundary
         glColor3f(0.7, 0.7, 0.7)
         glLineWidth(1.0)
         glBegin(GL_LINE_LOOP)
@@ -266,34 +345,37 @@ class UVLayoutViewer(QOpenGLWidget):
         glVertex3f(0, 1, 0)
         glEnd()
         
-        # Draw grid lines for better orientation
+        # Grid
         glColor3f(0.9, 0.9, 0.9)
         glLineWidth(0.5)
         glBegin(GL_LINES)
-        # Vertical lines
         for i in range(1, 4):
             x = i * 0.25
             glVertex3f(x, 0, 0)
             glVertex3f(x, 1, 0)
-        # Horizontal lines
         for i in range(1, 4):
             y = i * 0.25
             glVertex3f(0, y, 0)
             glVertex3f(1, y, 0)
         glEnd()
         
-        # Reset line width
         glLineWidth(1.0)
         
     def set_wireframe(self, wireframe):
-        """Set wireframe mode"""
         self.wireframe = wireframe
+        self.display_mode = "wireframe" if wireframe else "colored"
+        self.update()
+        
+    def set_display_mode(self, mode):
+        """Set display mode: 'wireframe', 'colored', or 'heatmap'"""
+        self.display_mode = mode
         self.update()
 
 class ComparisonViewer(QWidget):
-    """Widget that shows 3D mesh and UV layout side by side"""
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.vertices_3d = None
+        self.faces_3d = None
         self.init_ui()
         
     def init_ui(self):
@@ -326,7 +408,7 @@ class ComparisonViewer(QWidget):
         right_layout.setContentsMargins(2, 2, 2, 2)
         right_layout.setSpacing(2)
         
-        right_label = QLabel("UV Layout • Wireframe shows mesh structure")
+        right_label = QLabel("UV Layout • Shows conformal distortion")
         right_label.setMaximumHeight(15)
         right_label.setAlignment(Qt.AlignCenter)
         right_label.setStyleSheet("color: gray; font-size: 9px;")
@@ -353,10 +435,11 @@ class ComparisonViewer(QWidget):
         
         # UV view controls
         controls_layout.addWidget(QLabel("UV:"))
-        self.wireframe_uv_checkbox = QCheckBox("Wireframe")
-        self.wireframe_uv_checkbox.setChecked(True)  # Default to wireframe for UV
-        self.wireframe_uv_checkbox.stateChanged.connect(self.on_uv_wireframe_changed)
-        controls_layout.addWidget(self.wireframe_uv_checkbox)
+        
+        self.uv_mode_combo = QComboBox()
+        self.uv_mode_combo.addItems(["Wireframe", "Colored Faces", "Conformal Distortion"])
+        self.uv_mode_combo.currentTextChanged.connect(self.on_uv_mode_changed)
+        controls_layout.addWidget(self.uv_mode_combo)
         
         controls_layout.addStretch()
         
@@ -370,24 +453,30 @@ class ComparisonViewer(QWidget):
         
     def set_mesh_data(self, vertices, faces, uv_vertices, uv_faces):
         """Set mesh data for both viewers"""
+        self.vertices_3d = vertices
+        self.faces_3d = faces
         self.mesh_viewer.set_mesh(vertices, faces)
         if uv_vertices is not None and uv_faces is not None:
-            self.uv_viewer.set_uv_layout(uv_vertices, uv_faces)
+            # Pass 3D data to compute distortion
+            self.uv_viewer.set_uv_layout(uv_vertices, uv_faces, vertices, faces)
         
     def on_3d_wireframe_changed(self, state):
-        """Handle 3D wireframe overlay toggle"""
         wireframe = (state == Qt.Checked)
         self.mesh_viewer.set_wireframe_overlay(wireframe)
         
-    def on_uv_wireframe_changed(self, state):
-        """Handle UV wireframe toggle"""
-        wireframe = (state == Qt.Checked)
-        self.uv_viewer.set_wireframe(wireframe)
+    def on_uv_mode_changed(self, mode_text):
+        """Handle UV display mode change"""
+        if mode_text == "Wireframe":
+            self.uv_viewer.set_display_mode("wireframe")
+        elif mode_text == "Colored Faces":
+            self.uv_viewer.set_display_mode("colored")
+        elif mode_text == "Conformal Distortion":
+            self.uv_viewer.set_display_mode("heatmap")
         
     def reset_views(self):
-        """Reset both views to default"""
         if hasattr(self.mesh_viewer, 'vertices') and self.mesh_viewer.vertices is not None:
             self.mesh_viewer.set_mesh(self.mesh_viewer.vertices, self.mesh_viewer.faces)
         
         if hasattr(self.uv_viewer, 'uv_vertices') and self.uv_viewer.uv_vertices is not None:
-            self.uv_viewer.set_uv_layout(self.uv_viewer.uv_vertices, self.uv_viewer.uv_faces)
+            self.uv_viewer.set_uv_layout(self.uv_viewer.uv_vertices, self.uv_viewer.uv_faces, 
+                                       self.vertices_3d, self.faces_3d)
