@@ -162,9 +162,9 @@ class UVLayoutViewer(QOpenGLWidget):
         super().__init__(parent)
         self.uv_vertices = None
         self.uv_faces = None
-        self.wireframe = True
         self.display_mode = "wireframe"  # "wireframe", "colored", "heatmap"
         self.distortion = None  # Conformal distortion values per face
+        self.show_wireframe_overlay = True  # Always show wireframe in heatmap mode
         
     def set_uv_layout(self, uv_vertices, uv_faces, vertices_3d=None, faces_3d=None):
         """Set UV layout data and compute distortion if 3D data is provided"""
@@ -172,18 +172,18 @@ class UVLayoutViewer(QOpenGLWidget):
         self.uv_faces = uv_faces
         
         # Compute conformal distortion if 3D data is available
-        if vertices_3d is not None and faces_3d is not None:
+        if vertices_3d is not None and faces_3d is not None and len(uv_vertices) > 0:
             self.compute_conformal_distortion(vertices_3d, faces_3d, uv_vertices, uv_faces)
         
         self.update()
     
     def compute_conformal_distortion(self, vertices_3d, faces_3d, uv_vertices, uv_faces):
-        """Compute conformal distortion for each face - PROPER IMPLEMENTATION"""
+        """Compute conformal distortion for each face using area ratio method"""
         self.distortion = []
         
         for i, face in enumerate(faces_3d):
             if len(face) != 3:
-                self.distortion.append(1.0)  # No distortion for non-triangles
+                self.distortion.append(0.0)  # Neutral for non-triangles
                 continue
                 
             try:
@@ -196,82 +196,74 @@ class UVLayoutViewer(QOpenGLWidget):
                 else:
                     uv_face = face
                     
+                # Ensure we have valid UV indices
+                if (uv_face[0] >= len(uv_vertices) or uv_face[1] >= len(uv_vertices) or 
+                    uv_face[2] >= len(uv_vertices)):
+                    self.distortion.append(0.0)
+                    continue
+                    
                 uv0, uv1, uv2 = uv_vertices[uv_face[0]], uv_vertices[uv_face[1]], uv_vertices[uv_face[2]]
                 
-                # Compute edge vectors in 3D
-                e1_3d = v1_3d - v0_3d
-                e2_3d = v2_3d - v0_3d
+                # Compute 3D area
+                edge1_3d = v1_3d - v0_3d
+                edge2_3d = v2_3d - v0_3d
+                area_3d = 0.5 * np.linalg.norm(np.cross(edge1_3d, edge2_3d))
                 
-                # Compute edge vectors in UV space
-                e1_uv = uv1 - uv0
-                e2_uv = uv2 - uv0
+                # Compute UV area (in 2D)
+                edge1_uv = uv1 - uv0
+                edge2_uv = uv2 - uv0
+                area_uv = 0.5 * abs(edge1_uv[0]*edge2_uv[1] - edge1_uv[1]*edge2_uv[0])
                 
-                # Compute the Jacobian matrix of the mapping from 3D to UV
-                # We need to solve: [e1_uv, e2_uv] = J * [e1_3d, e2_3d]
-                # This is a 2x2 linear system
+                # Avoid division by zero
+                if area_3d < 1e-10 or area_uv < 1e-10:
+                    self.distortion.append(0.0)
+                    continue
                 
-                # Create the matrix of 3D edge vectors (we use only the first two coordinates for 2D mapping)
-                A = np.column_stack([e1_3d[:2], e2_3d[:2]])
+                # Compute scale factor (how much the triangle was scaled in UV space)
+                scale_factor = np.sqrt(area_uv / area_3d)
                 
-                # Solve for Jacobian columns
-                try:
-                    J_col1 = np.linalg.solve(A, e1_uv)
-                    J_col2 = np.linalg.solve(A, e2_uv)
-                    J = np.column_stack([J_col1, J_col2])
-                    
-                    # Compute singular values of the Jacobian
-                    U, s, Vt = np.linalg.svd(J)
-                    
-                    # Conformal distortion: ratio of largest to smallest singular value
-                    # A perfect conformal map has singular values equal (distortion = 1)
-                    # Higher values indicate more distortion
-                    if len(s) >= 2 and s[1] > 1e-10:
-                        distortion_val = s[0] / s[1]
-                    else:
-                        distortion_val = 1.0
-                        
-                except np.linalg.LinAlgError:
-                    # Fallback: use area ratio as distortion measure
-                    area_3d = 0.5 * np.linalg.norm(np.cross(e1_3d, e2_3d))
-                    area_uv = 0.5 * abs(e1_uv[0]*e2_uv[1] - e1_uv[1]*e2_uv[0])
-                    
-                    if area_uv > 1e-10 and area_3d > 1e-10:
-                        # Use log of area ratio as distortion measure
-                        distortion_val = abs(np.log(area_uv / area_3d)) + 1.0
-                    else:
-                        distortion_val = 1.0
+                # Conformal distortion: how much the scale deviates from ideal
+                # For perfect conformal map, scale should be consistent across mesh
+                # We'll use the absolute log of the scale factor as distortion measure
+                distortion_val = abs(np.log(scale_factor))
                 
                 self.distortion.append(distortion_val)
                 
             except Exception as e:
                 # If anything fails, use neutral distortion
-                self.distortion.append(1.0)
+                self.distortion.append(0.0)
         
-        # Normalize distortion values for better visualization
+        # Normalize distortion values for visualization
         if self.distortion:
             distortions = np.array(self.distortion)
-            # Use log scale for better visualization of distortion range
-            log_distortions = np.log(distortions + 1e-8)
-            # Normalize to [0, 1] range
-            min_dist = np.min(log_distortions)
-            max_dist = np.max(log_distortions)
-            if max_dist > min_dist:
-                self.distortion = (log_distortions - min_dist) / (max_dist - min_dist)
+            if np.max(distortions) > 0:
+                # Normalize to [0, 1] range
+                self.distortion = distortions / np.max(distortions)
             else:
                 self.distortion = np.zeros_like(distortions)
     
     def get_heatmap_color(self, normalized_distortion):
         """Convert normalized distortion value to heatmap color"""
-        # Blue (low distortion) -> Green -> Red (high distortion)
-        if normalized_distortion < 0.5:
-            # Blue to Green
+        # Blue (low distortion) -> Cyan -> Green -> Yellow -> Red (high distortion)
+        if normalized_distortion < 0.25:
+            # Blue to Cyan
             r = 0.0
-            g = normalized_distortion * 2.0
-            b = 1.0 - normalized_distortion * 2.0
+            g = normalized_distortion * 4.0
+            b = 1.0
+        elif normalized_distortion < 0.5:
+            # Cyan to Green
+            r = 0.0
+            g = 1.0
+            b = 1.0 - (normalized_distortion - 0.25) * 4.0
+        elif normalized_distortion < 0.75:
+            # Green to Yellow
+            r = (normalized_distortion - 0.5) * 4.0
+            g = 1.0
+            b = 0.0
         else:
-            # Green to Red
-            r = (normalized_distortion - 0.5) * 2.0
-            g = 1.0 - (normalized_distortion - 0.5) * 2.0
+            # Yellow to Red
+            r = 1.0
+            g = 1.0 - (normalized_distortion - 0.75) * 4.0
             b = 0.0
             
         return r, g, b
@@ -309,6 +301,7 @@ class UVLayoutViewer(QOpenGLWidget):
             return
             
         if self.display_mode == "wireframe":
+            # Wireframe only
             glPolygonMode(GL_FRONT_AND_BACK, GL_LINE)
             glColor3f(0.2, 0.2, 0.8)
             glLineWidth(1.5)
@@ -323,6 +316,7 @@ class UVLayoutViewer(QOpenGLWidget):
             glEnd()
             
         elif self.display_mode == "colored":
+            # Colored faces only
             glPolygonMode(GL_FRONT_AND_BACK, GL_FILL)
             
             glBegin(GL_TRIANGLES)
@@ -342,6 +336,8 @@ class UVLayoutViewer(QOpenGLWidget):
             glEnd()
             
         elif self.display_mode == "heatmap" and self.distortion is not None:
+            # Heatmap with wireframe overlay
+            # First draw filled triangles with heatmap colors
             glPolygonMode(GL_FRONT_AND_BACK, GL_FILL)
             
             glBegin(GL_TRIANGLES)
@@ -356,7 +352,23 @@ class UVLayoutViewer(QOpenGLWidget):
                             uv = self.uv_vertices[vertex_idx]
                             glVertex3f(uv[0], uv[1], 0)
             glEnd()
+            
+            # Then draw wireframe on top
+            if self.show_wireframe_overlay:
+                glPolygonMode(GL_FRONT_AND_BACK, GL_LINE)
+                glColor3f(0.1, 0.1, 0.1)  # Dark wireframe
+                glLineWidth(1.0)
+                
+                glBegin(GL_TRIANGLES)
+                for i, face in enumerate(self.uv_faces):
+                    if len(face) == 3:
+                        for vertex_idx in face:
+                            if vertex_idx < len(self.uv_vertices):
+                                uv = self.uv_vertices[vertex_idx]
+                                glVertex3f(uv[0], uv[1], 0)
+                glEnd()
         
+        # Reset to defaults
         glPolygonMode(GL_FRONT_AND_BACK, GL_FILL)
         glLineWidth(1.0)
         
@@ -385,11 +397,6 @@ class UVLayoutViewer(QOpenGLWidget):
         glEnd()
         
         glLineWidth(1.0)
-        
-    def set_wireframe(self, wireframe):
-        self.wireframe = wireframe
-        self.display_mode = "wireframe" if wireframe else "colored"
-        self.update()
         
     def set_display_mode(self, mode):
         """Set display mode: 'wireframe', 'colored', or 'heatmap'"""
@@ -433,7 +440,7 @@ class ComparisonViewer(QWidget):
         right_layout.setContentsMargins(2, 2, 2, 2)
         right_layout.setSpacing(2)
         
-        right_label = QLabel("UV Layout • Blue=low distortion, Red=high distortion")
+        right_label = QLabel("UV Layout • Heatmap shows area distortion • Dark wireframe overlay")
         right_label.setMaximumHeight(15)
         right_label.setAlignment(Qt.AlignCenter)
         right_label.setStyleSheet("color: gray; font-size: 9px;")
