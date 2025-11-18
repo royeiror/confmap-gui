@@ -2,51 +2,109 @@ name: Build Windows Executable
 
 on:
   push:
-    tags: ['v*']
-  workflow_dispatch:  # Allow manual triggering
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
 
 jobs:
-  build-windows:
+  build:
     runs-on: windows-latest
     
+    strategy:
+      matrix:
+        python-version: [3.9]
+    
     steps:
-    - name: Checkout code
+    - name: Checkout repository with retry
       uses: actions/checkout@v4
-      
-    - name: Set up Python
+      with:
+        retries: 3
+        retry-wait-time: 30
+    
+    - name: Set up Python ${{ matrix.python-version }}
       uses: actions/setup-python@v4
       with:
-        python-version: '3.9'
-        
+        python-version: ${{ matrix.python-version }}
+        cache: 'pip'
+    
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install -r requirements.txt
+        pip install pyinstaller PyQt5 numpy pyopengl
         
-    - name: Build executable with PyInstaller
+    - name: Verify imports
       run: |
-        pyinstaller --name=ConfMap3DProcessor `
-                    --windowed `
-                    --onefile `
-                    --add-data="minimal_confmap.py;." `
-                    --add-data="mesh_viewer.py;." `
-                    --clean `
-                    --noconfirm `
-                    confmap_gui.py
-                    
-    - name: Create release archive
-      run: |
-        Compress-Archive -Path "dist/ConfMap3DProcessor.exe" -DestinationPath "ConfMap3DProcessor-Windows.zip" -Force
+        python -c "import sys; print('Python path:', sys.path)"
+        python -c "import PyQt5.QtWidgets; print('PyQt5 import successful')"
+        python -c "import numpy; print('NumPy import successful')"
+        python -c "from OpenGL.GL import *; print('PyOpenGL import successful')"
+        python -c "import xml.etree.ElementTree; print('XML import successful')"
         
-    - name: Upload artifact
+    - name: Test the application
+      run: |
+        python -c "
+        import sys
+        sys.path.append('.')
+        try:
+            from mesh_viewer import MainWindow
+            print('MainWindow import successful')
+            
+            # Test basic functionality
+            import numpy as np
+            from PyQt5.QtWidgets import QApplication
+            import sys as system
+            
+            # Create a simple test without showing GUI
+            app = QApplication([])
+            window = MainWindow()
+            print('Application creation successful')
+            
+            # Test mesh data setting
+            vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=np.float32)
+            faces = np.array([[0, 1, 2]], dtype=np.int32)
+            uv_vertices = np.array([[0, 0], [1, 0], [0, 1]], dtype=np.float32)
+            uv_faces = np.array([[0, 1, 2]], dtype=np.int32)
+            
+            window.comparison_viewer.set_mesh_data(vertices, faces, uv_vertices, uv_faces)
+            print('Mesh data setting successful')
+            
+            print('All tests passed!')
+            
+        except Exception as e:
+            print(f'Test failed: {e}')
+            import traceback
+            traceback.print_exc()
+            sys.exit(1)
+        "
+    
+    - name: Build with PyInstaller
+      run: |
+        pyinstaller --onefile --windowed --name "ConfMapGUI" --add-data ".;." mesh_viewer.py
+      
+    - name: Upload executable
       uses: actions/upload-artifact@v4
       with:
-        name: ConfMap3DProcessor-Windows
-        path: ConfMap3DProcessor-Windows.zip
+        name: ConfMapGUI-Windows
+        path: dist/ConfMapGUI.exe
         retention-days: 30
-        
-    - name: Create Release
-      if: startsWith(github.ref, 'refs/tags/')
-      uses: softprops/action-gh-release@v1
+
+  # Optional: Add a test job that runs if build succeeds
+  test-build:
+    needs: build
+    runs-on: windows-latest
+    steps:
+    - name: Download executable
+      uses: actions/download-artifact@v4
       with:
-        files: ConfMap3DProcessor-Windows.zip
+        name: ConfMapGUI-Windows
+        
+    - name: Verify executable exists
+      run: |
+        dir
+        if (Test-Path "ConfMapGUI.exe") {
+          echo "Executable created successfully"
+          echo "File size: $( (Get-Item 'ConfMapGUI.exe').Length ) bytes"
+        } else {
+          echo "Executable not found"
+          exit 1
+        }
