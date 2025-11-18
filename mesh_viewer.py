@@ -11,7 +11,6 @@ from OpenGL.GLU import *
 import os
 import tempfile
 import sys
-import trimesh
 from scipy.sparse import lil_matrix
 from scipy.sparse.linalg import spsolve
 import time
@@ -38,24 +37,23 @@ class ConformalMappingThread(QThread):
             self.finished_signal.emit(None, None)
     
     def compute_conformal_map(self):
-        """Compute a simple conformal map using harmonic mapping"""
+        """Compute a simple conformal map using harmonic mapping without trimesh"""
         self.progress_signal.emit(10)
         self.log_signal.emit("Building mesh connectivity...")
         
-        mesh = trimesh.Trimesh(vertices=self.vertices, faces=self.faces)
+        n_vertices = len(self.vertices)
+        n_faces = len(self.faces)
         
-        # Find boundary vertices
-        boundaries = mesh.boundary_loops
-        if len(boundaries) == 0:
-            self.log_signal.emit("No boundary found - using convex hull as boundary")
-            # Use convex hull as boundary for closed meshes
-            hull = mesh.convex_hull
-            boundaries = hull.boundary_loops
+        # Find boundary vertices (simplified approach)
+        boundary = self.find_boundary_vertices()
         
-        if len(boundaries) == 0:
+        if len(boundary) == 0:
+            self.log_signal.emit("No boundary found - using convex hull approximation")
+            boundary = self.approximate_convex_hull()
+        
+        if len(boundary) == 0:
             raise ValueError("Cannot find suitable boundary for mapping")
         
-        boundary = boundaries[0]  # Use first boundary
         self.progress_signal.emit(30)
         self.log_signal.emit(f"Found boundary with {len(boundary)} vertices")
         
@@ -70,7 +68,6 @@ class ConformalMappingThread(QThread):
         self.log_signal.emit("Setting up linear system...")
         
         # Build cotangent Laplacian matrix
-        n_vertices = len(self.vertices)
         L = lil_matrix((n_vertices, n_vertices))
         
         for face in self.faces:
@@ -83,12 +80,14 @@ class ConformalMappingThread(QThread):
                     # Compute cotangent weight
                     vec1 = self.vertices[v1] - self.vertices[v3]
                     vec2 = self.vertices[v2] - self.vertices[v3]
-                    cot_angle = np.dot(vec1, vec2) / np.linalg.norm(np.cross(vec1, vec2))
-                    
-                    L[v1, v2] += cot_angle
-                    L[v2, v1] += cot_angle
-                    L[v1, v1] -= cot_angle
-                    L[v2, v2] -= cot_angle
+                    cross_norm = np.linalg.norm(np.cross(vec1, vec2))
+                    if cross_norm > 1e-10:
+                        cot_angle = np.dot(vec1, vec2) / cross_norm
+                        
+                        L[v1, v2] += cot_angle
+                        L[v2, v1] += cot_angle
+                        L[v1, v1] -= cot_angle
+                        L[v2, v2] -= cot_angle
         
         self.progress_signal.emit(70)
         self.log_signal.emit("Solving linear system...")
@@ -128,6 +127,94 @@ class ConformalMappingThread(QThread):
         
         self.progress_signal.emit(100)
         return uv_vertices, self.faces
+    
+    def find_boundary_vertices(self):
+        """Find boundary vertices by detecting edges used only once"""
+        edge_count = {}
+        
+        for face in self.faces:
+            if len(face) == 3:
+                for i in range(3):
+                    v1 = face[i]
+                    v2 = face[(i + 1) % 3]
+                    edge = tuple(sorted([v1, v2]))
+                    edge_count[edge] = edge_count.get(edge, 0) + 1
+        
+        # Boundary edges are those used only once
+        boundary_edges = [edge for edge, count in edge_count.items() if count == 1]
+        boundary_vertices = set()
+        
+        for edge in boundary_edges:
+            boundary_vertices.add(edge[0])
+            boundary_vertices.add(edge[1])
+        
+        # Order boundary vertices
+        if boundary_edges:
+            ordered_boundary = self.order_boundary_vertices(boundary_edges)
+            return ordered_boundary
+        else:
+            return list(boundary_vertices)
+    
+    def order_boundary_vertices(self, boundary_edges):
+        """Order boundary vertices to form a loop"""
+        if not boundary_edges:
+            return []
+        
+        # Build adjacency list
+        adj = {}
+        for edge in boundary_edges:
+            v1, v2 = edge
+            adj.setdefault(v1, []).append(v2)
+            adj.setdefault(v2, []).append(v1)
+        
+        # Find starting vertex (any vertex with degree 1)
+        start_vertex = None
+        for vertex, neighbors in adj.items():
+            if len(neighbors) == 1:
+                start_vertex = vertex
+                break
+        
+        if start_vertex is None:
+            start_vertex = list(adj.keys())[0]
+        
+        # Traverse boundary
+        ordered = [start_vertex]
+        current = start_vertex
+        prev = None
+        
+        while True:
+            neighbors = [n for n in adj[current] if n != prev]
+            if not neighbors:
+                break
+            next_vertex = neighbors[0]
+            if next_vertex == start_vertex:
+                break
+            ordered.append(next_vertex)
+            prev, current = current, next_vertex
+            if len(ordered) > len(adj):
+                break  # Prevent infinite loops
+        
+        return ordered
+    
+    def approximate_convex_hull(self):
+        """Simple convex hull approximation for closed meshes"""
+        # Use vertices with extreme coordinates
+        if len(self.vertices) == 0:
+            return []
+        
+        # Simple approach: use vertices on the convex hull in XY plane
+        points_2d = self.vertices[:, :2]
+        
+        # Graham scan-like simple selection
+        center = np.mean(points_2d, axis=0)
+        angles = np.arctan2(points_2d[:, 1] - center[1], points_2d[:, 0] - center[0])
+        
+        # Select evenly spaced points around the center
+        n_boundary = min(20, len(self.vertices))
+        indices = np.argsort(angles)
+        boundary_indices = indices[np.linspace(0, len(indices)-1, n_boundary, dtype=int)]
+        
+        return boundary_indices.tolist()
 
 
 class MeshViewer3D(QOpenGLWidget):
