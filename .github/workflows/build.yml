@@ -37,7 +37,7 @@ jobs:
         python -c "from OpenGL.GL import *; print('PyOpenGL import successful')"
         python -c "import xml.etree.ElementTree; print('XML import successful')"
         python -c "import scipy; print('SciPy import successful')"
-        python -c "import trimesh; print('trimesh import successful')"
+        echo "All required imports successful!"
         
     - name: Test the application
       run: |
@@ -50,6 +50,10 @@ jobs:
             from PyQt5.QtWidgets import QApplication
             import sys as system
             
+            # Test our simple OBJ loader
+            from mesh_viewer import SimpleObjLoader
+            print('SimpleObjLoader import successful')
+            
             # Now try to import the main window
             from mesh_viewer import MainWindow
             print('MainWindow import successful')
@@ -58,6 +62,10 @@ jobs:
             app = QApplication([])
             window = MainWindow()
             print('Application creation successful')
+            
+            # Test creating mapping thread
+            from mesh_viewer import ConformalMappingThread
+            print('ConformalMappingThread import successful')
             
             print('All tests passed!')
             
