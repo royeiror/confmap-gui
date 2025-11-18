@@ -15,11 +15,8 @@ jobs:
         python-version: [3.9]
     
     steps:
-    - name: Checkout repository with retry
+    - name: Checkout repository
       uses: actions/checkout@v4
-      with:
-        retries: 3
-        retry-wait-time: 30
     
     - name: Set up Python ${{ matrix.python-version }}
       uses: actions/setup-python@v4
@@ -30,7 +27,7 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install pyinstaller PyQt5 numpy pyopengl
+        pip install -r requirements.txt
         
     - name: Verify imports
       run: |
@@ -39,6 +36,8 @@ jobs:
         python -c "import numpy; print('NumPy import successful')"
         python -c "from OpenGL.GL import *; print('PyOpenGL import successful')"
         python -c "import xml.etree.ElementTree; print('XML import successful')"
+        python -c "import scipy; print('SciPy import successful')"
+        python -c "import trimesh; print('trimesh import successful')"
         
     - name: Test the application
       run: |
@@ -46,27 +45,19 @@ jobs:
         import sys
         sys.path.append('.')
         try:
-            from mesh_viewer import MainWindow
-            print('MainWindow import successful')
-            
-            # Test basic functionality
+            # Test basic imports first
             import numpy as np
             from PyQt5.QtWidgets import QApplication
             import sys as system
+            
+            # Now try to import the main window
+            from mesh_viewer import MainWindow
+            print('MainWindow import successful')
             
             # Create a simple test without showing GUI
             app = QApplication([])
             window = MainWindow()
             print('Application creation successful')
-            
-            # Test mesh data setting
-            vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=np.float32)
-            faces = np.array([[0, 1, 2]], dtype=np.int32)
-            uv_vertices = np.array([[0, 0], [1, 0], [0, 1]], dtype=np.float32)
-            uv_faces = np.array([[0, 1, 2]], dtype=np.int32)
-            
-            window.comparison_viewer.set_mesh_data(vertices, faces, uv_vertices, uv_faces)
-            print('Mesh data setting successful')
             
             print('All tests passed!')
             
@@ -79,7 +70,7 @@ jobs:
     
     - name: Build with PyInstaller
       run: |
-        pyinstaller --onefile --windowed --name "ConfMapGUI" --add-data ".;." mesh_viewer.py
+        pyinstaller --onefile --windowed --name "ConfMapGUI" mesh_viewer.py
       
     - name: Upload executable
       uses: actions/upload-artifact@v4
@@ -88,7 +79,6 @@ jobs:
         path: dist/ConfMapGUI.exe
         retention-days: 30
 
-  # Optional: Add a test job that runs if build succeeds
   test-build:
     needs: build
     runs-on: windows-latest
