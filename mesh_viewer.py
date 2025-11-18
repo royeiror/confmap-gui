@@ -1,463 +1,30 @@
 import numpy as np
+import xml.etree.ElementTree as ET
 from PyQt5.QtWidgets import (QOpenGLWidget, QVBoxLayout, QHBoxLayout, QWidget, 
-                             QLabel, QSplitter, QCheckBox, QPushButton, QComboBox)
+                             QLabel, QSplitter, QCheckBox, QPushButton, QComboBox,
+                             QFileDialog, QMessageBox, QSlider, QSpinBox)
 from PyQt5.QtCore import Qt, QPoint
 from PyQt5.QtGui import QMouseEvent
 from OpenGL.GL import *
 from OpenGL.GLU import *
+import os
+import tempfile
 
 class MeshViewer3D(QOpenGLWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.vertices = None
-        self.faces = None
-        
-        # Camera controls
-        self.rotation_x = -45
-        self.rotation_y = 45
-        self.zoom = -5
-        self.last_pos = QPoint()
-        self.wireframe_overlay = False
-        
-        # Mesh bounds for auto-zoom
-        self.mesh_center = np.array([0, 0, 0])
-        self.mesh_radius = 1.0
-        
-        # Projection settings
-        self.near_plane = 0.1
-        self.far_plane = 1000.0
-        
-    def set_mesh(self, vertices, faces):
-        """Set mesh data for display"""
-        self.vertices = vertices
-        self.faces = faces
-        
-        # Calculate mesh bounds for auto-zoom
-        if vertices is not None and len(vertices) > 0:
-            self.mesh_center = np.mean(vertices, axis=0)
-            distances = np.linalg.norm(vertices - self.mesh_center, axis=1)
-            self.mesh_radius = np.max(distances) if len(distances) > 0 else 1.0
-            self.zoom = -self.mesh_radius * 3.0
-            
-        self.update()
-        
-    def initializeGL(self):
-        """Initialize OpenGL"""
-        glEnable(GL_DEPTH_TEST)
-        glEnable(GL_LIGHTING)
-        glEnable(GL_LIGHT0)
-        glEnable(GL_LIGHT1)
-        glEnable(GL_COLOR_MATERIAL)
-        glColorMaterial(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE)
-        
-        # Set up main lighting
-        glLightfv(GL_LIGHT0, GL_POSITION, [2, 2, 2, 1])
-        glLightfv(GL_LIGHT0, GL_AMBIENT, [0.3, 0.3, 0.3, 1])
-        glLightfv(GL_LIGHT0, GL_DIFFUSE, [0.8, 0.8, 0.8, 1])
-        glLightfv(GL_LIGHT0, GL_SPECULAR, [0.5, 0.5, 0.5, 1])
-        
-        # Set up secondary lighting
-        glLightfv(GL_LIGHT1, GL_POSITION, [-2, -1, -1, 1])
-        glLightfv(GL_LIGHT1, GL_DIFFUSE, [0.3, 0.3, 0.3, 1])
-        glLightfv(GL_LIGHT1, GL_SPECULAR, [0.2, 0.2, 0.2, 1])
-        
-        glMaterialfv(GL_FRONT, GL_SPECULAR, [0.5, 0.5, 0.5, 1])
-        glMaterialf(GL_FRONT, GL_SHININESS, 50.0)
-        
-        glClearColor(0.1, 0.1, 0.1, 1.0)
-        
-    def resizeGL(self, width, height):
-        """Handle window resize"""
-        glViewport(0, 0, width, height)
-        glMatrixMode(GL_PROJECTION)
-        glLoadIdentity()
-        aspect = width / float(height) if height != 0 else 1.0
-        gluPerspective(45, aspect, self.near_plane, self.far_plane)
-        glMatrixMode(GL_MODELVIEW)
-        
-    def paintGL(self):
-        """Render the scene"""
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
-        glLoadIdentity()
-        
-        glTranslatef(0, 0, self.zoom)
-        glRotatef(self.rotation_x, 1, 0, 0)
-        glRotatef(self.rotation_y, 0, 1, 0)
-        
-        if self.vertices is not None and len(self.vertices) > 0:
-            glTranslatef(-self.mesh_center[0], -self.mesh_center[1], -self.mesh_center[2])
-        
-        if self.vertices is not None and self.faces is not None:
-            self.draw_mesh()
-                
-    def draw_mesh(self):
-        """Draw the 3D mesh with optional wireframe overlay"""
-        # Draw solid mesh first
-        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL)
-        glEnable(GL_LIGHTING)
-        glColor3f(0.6, 0.7, 0.9)
-        
-        glBegin(GL_TRIANGLES)
-        for face in self.faces:
-            if len(face) == 3:
-                v0 = self.vertices[face[0]]
-                v1 = self.vertices[face[1]]
-                v2 = self.vertices[face[2]]
-                
-                edge1 = v1 - v0
-                edge2 = v2 - v0
-                normal = np.cross(edge1, edge2)
-                norm = np.linalg.norm(normal)
-                if norm > 1e-10:
-                    normal = normal / norm
-                    glNormal3fv(normal)
-                
-                for vertex_idx in face:
-                    glVertex3fv(self.vertices[vertex_idx])
-        glEnd()
-        
-        # Draw wireframe overlay if enabled
-        if self.wireframe_overlay:
-            glPolygonMode(GL_FRONT_AND_BACK, GL_LINE)
-            glDisable(GL_LIGHTING)
-            glColor3f(0.1, 0.1, 0.3)
-            glLineWidth(1.0)
-            
-            glBegin(GL_TRIANGLES)
-            for face in self.faces:
-                if len(face) == 3:
-                    for vertex_idx in face:
-                        glVertex3fv(self.vertices[vertex_idx])
-            glEnd()
-        
-        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL)
-        glEnable(GL_LIGHTING)
-        glLineWidth(1.0)
-        
-    def mousePressEvent(self, event: QMouseEvent):
-        self.last_pos = event.pos()
-        
-    def mouseMoveEvent(self, event: QMouseEvent):
-        dx = event.x() - self.last_pos.x()
-        dy = event.y() - self.last_pos.y()
-        
-        if event.buttons() & Qt.LeftButton:
-            self.rotation_y += dx * 0.5
-            self.rotation_x += dy * 0.5
-            self.update()
-            
-        self.last_pos = event.pos()
-        
-    def wheelEvent(self, event):
-        zoom_speed = max(0.1, abs(self.zoom) * 0.05)
-        self.zoom += event.angleDelta().y() * 0.001 * zoom_speed
-        self.update()
-        
-    def set_wireframe_overlay(self, wireframe):
-        self.wireframe_overlay = wireframe
-        self.update()
+    # ... (keep the existing MeshViewer3D class exactly as before) ...
 
 class UVLayoutViewer(QOpenGLWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.uv_vertices = None
-        self.uv_faces = None
-        self.display_mode = "wireframe"  # "wireframe", "heatmap"
-        self.distortion = None  # Conformal distortion values per face
-        self.distortion_range = (0.0, 1.0)  # Auto-adjusting range
-        self.show_wireframe_overlay = True  # Optional wireframe in heatmap mode
-        
-    def set_uv_layout(self, uv_vertices, uv_faces, vertices_3d=None, faces_3d=None):
-        """Set UV layout data and compute distortion if 3D data is provided"""
-        self.uv_vertices = uv_vertices
-        self.uv_faces = uv_faces
-        
-        # Compute conformal distortion if 3D data is available
-        if vertices_3d is not None and faces_3d is not None and len(uv_vertices) > 0:
-            self.compute_conformal_distortion(vertices_3d, faces_3d, uv_vertices, uv_faces)
-        
-        self.update()
-    
-    def compute_conformal_distortion(self, vertices_3d, faces_3d, uv_vertices, uv_faces):
-        """Compute conformal distortion for each face using scale factors"""
-        self.distortion = []
-        
-        for i, face_3d in enumerate(faces_3d):
-            if len(face_3d) != 3:
-                self.distortion.append(0.0)
-                continue
-                
-            try:
-                # Get 3D triangle vertices
-                v0_3d, v1_3d, v2_3d = vertices_3d[face_3d[0]], vertices_3d[face_3d[1]], vertices_3d[face_3d[2]]
-                
-                # Get corresponding UV triangle vertices
-                if i < len(uv_faces):
-                    uv_face = uv_faces[i]
-                else:
-                    uv_face = face_3d
-                    
-                # Ensure we have valid UV indices
-                if (uv_face[0] >= len(uv_vertices) or uv_face[1] >= len(uv_vertices) or 
-                    uv_face[2] >= len(uv_vertices)):
-                    self.distortion.append(0.0)
-                    continue
-                    
-                uv0, uv1, uv2 = uv_vertices[uv_face[0]], uv_vertices[uv_face[1]], uv_vertices[uv_face[2]]
-                
-                # Compute edge vectors in 3D
-                e1_3d = v1_3d - v0_3d
-                e2_3d = v2_3d - v0_3d
-                
-                # Compute edge vectors in UV
-                e1_uv = uv1 - uv0
-                e2_uv = uv2 - uv0
-                
-                # Compute areas
-                area_3d = 0.5 * np.linalg.norm(np.cross(e1_3d, e2_3d))
-                area_uv = 0.5 * abs(e1_uv[0]*e2_uv[1] - e1_uv[1]*e2_uv[0])
-                
-                if area_3d < 1e-10 or area_uv < 1e-10:
-                    self.distortion.append(0.0)
-                    continue
-                
-                # Compute edge lengths in 3D and UV
-                len_e1_3d = np.linalg.norm(e1_3d)
-                len_e2_3d = np.linalg.norm(e2_3d)
-                len_e1_uv = np.linalg.norm(e1_uv)
-                len_e2_uv = np.linalg.norm(e2_uv)
-                
-                # Compute scale factors for both edges
-                scale1 = len_e1_uv / len_e1_3d if len_e1_3d > 1e-10 else 1.0
-                scale2 = len_e2_uv / len_e2_3d if len_e2_3d > 1e-10 else 1.0
-                
-                # Compute area scale factor
-                area_scale = area_uv / area_3d
-                
-                # Conformal distortion: measure of how different the scales are
-                # Perfect conformal mapping would have uniform scaling
-                max_scale = max(scale1, scale2, area_scale)
-                min_scale = min(scale1, scale2, area_scale)
-                
-                if min_scale > 1e-10:
-                    scale_ratio = max_scale / min_scale
-                    # Log scale to make it more manageable, offset by 1 to avoid log(1) = 0
-                    distortion_val = np.log(scale_ratio)
-                else:
-                    distortion_val = 0.0
-                
-                self.distortion.append(distortion_val)
-                
-            except Exception as e:
-                print(f"Error computing distortion for face {i}: {e}")
-                self.distortion.append(0.0)
-        
-        # Auto-adjust distortion range to ensure good color variation
-        if self.distortion:
-            distortions = np.array(self.distortion)
-            valid_distortions = distortions[np.isfinite(distortions)]
-            
-            if len(valid_distortions) > 0:
-                # Use percentiles to remove outliers
-                q10 = np.percentile(valid_distortions, 10)
-                q90 = np.percentile(valid_distortions, 90)
-                
-                if q90 > q10:
-                    # Add some padding
-                    padding = (q90 - q10) * 0.2
-                    self.distortion_range = (max(0, q10 - padding), q90 + padding)
-                else:
-                    # If all values are similar, use min/max with padding
-                    min_val = np.min(valid_distortions)
-                    max_val = np.max(valid_distortions)
-                    if max_val > min_val:
-                        padding = (max_val - min_val) * 0.2
-                        self.distortion_range = (min_val - padding, max_val + padding)
-                    else:
-                        self.distortion_range = (0.0, 1.0)
-            else:
-                self.distortion_range = (0.0, 1.0)
-            
-            print(f"Distortion range: {self.distortion_range}")
-            print(f"Distortion stats - Min: {np.min(valid_distortions) if len(valid_distortions) > 0 else 'N/A'}, "
-                  f"Max: {np.max(valid_distortions) if len(valid_distortions) > 0 else 'N/A'}, "
-                  f"Mean: {np.mean(valid_distortions) if len(valid_distortions) > 0 else 'N/A'}")
-    
-    def get_heatmap_color(self, distortion_value):
-        """Convert distortion value to heatmap color with better distribution"""
-        min_val, max_val = self.distortion_range
-        
-        # If range is too small, use a fixed range to ensure colors
-        if max_val - min_val < 1e-10:
-            normalized = 0.5
-        else:
-            normalized = (distortion_value - min_val) / (max_val - min_val)
-        
-        # Clamp to [0, 1]
-        normalized = max(0.0, min(1.0, normalized))
-        
-        # Enhanced heatmap with more visible color transitions
-        if normalized < 0.2:
-            # Deep blue to blue
-            t = normalized / 0.2
-            r = 0.0
-            g = 0.0
-            b = 0.5 + 0.5 * t
-        elif normalized < 0.4:
-            # Blue to cyan
-            t = (normalized - 0.2) / 0.2
-            r = 0.0
-            g = t
-            b = 1.0
-        elif normalized < 0.6:
-            # Cyan to green
-            t = (normalized - 0.4) / 0.2
-            r = 0.0
-            g = 1.0
-            b = 1.0 - t
-        elif normalized < 0.8:
-            # Green to yellow
-            t = (normalized - 0.6) / 0.2
-            r = t
-            g = 1.0
-            b = 0.0
-        else:
-            # Yellow to red
-            t = (normalized - 0.8) / 0.2
-            r = 1.0
-            g = 1.0 - t
-            b = 0.0
-            
-        return r, g, b
-        
-    def initializeGL(self):
-        glEnable(GL_DEPTH_TEST)
-        glDisable(GL_LIGHTING)
-        glClearColor(1.0, 1.0, 1.0, 1.0)
-        
-    def resizeGL(self, width, height):
-        glViewport(0, 0, width, height)
-        glMatrixMode(GL_PROJECTION)
-        glLoadIdentity()
-        
-        padding = 0.1
-        aspect = width / float(height) if height != 0 else 1.0
-        
-        if aspect > 1:
-            glOrtho(-padding, 1 + padding, (-padding)/aspect, (1 + padding)/aspect, -1, 1)
-        else:
-            glOrtho(-padding * aspect, (1 + padding) * aspect, -padding, 1 + padding, -1, 1)
-            
-        glMatrixMode(GL_MODELVIEW)
-        
-    def paintGL(self):
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
-        glLoadIdentity()
-        
-        if self.uv_vertices is not None and self.uv_faces is not None:
-            self.draw_uv_layout()
-            self.draw_uv_boundary()
-                
-    def draw_uv_layout(self):
-        if self.uv_vertices is None or self.uv_faces is None:
-            return
-            
-        if self.display_mode == "wireframe":
-            # Wireframe only
-            glPolygonMode(GL_FRONT_AND_BACK, GL_LINE)
-            glColor3f(0.2, 0.2, 0.8)
-            glLineWidth(1.5)
-            
-            glBegin(GL_TRIANGLES)
-            for i, face in enumerate(self.uv_faces):
-                if len(face) == 3:
-                    for vertex_idx in face:
-                        if vertex_idx < len(self.uv_vertices):
-                            uv = self.uv_vertices[vertex_idx]
-                            glVertex3f(uv[0], uv[1], 0)
-            glEnd()
-            
-        elif self.display_mode == "heatmap" and self.distortion is not None:
-            # Heatmap with optional wireframe overlay
-            
-            # PASS 1: Draw filled triangles with heatmap colors
-            glPolygonMode(GL_FRONT_AND_BACK, GL_FILL)
-            glBegin(GL_TRIANGLES)
-            for i, face in enumerate(self.uv_faces):
-                if len(face) == 3 and i < len(self.distortion):
-                    # Heatmap color based on ACTUAL distortion
-                    r, g, b = self.get_heatmap_color(self.distortion[i])
-                    glColor3f(r, g, b)
-                    
-                    for vertex_idx in face:
-                        if vertex_idx < len(self.uv_vertices):
-                            uv = self.uv_vertices[vertex_idx]
-                            glVertex3f(uv[0], uv[1], 0)
-            glEnd()
-            
-            # PASS 2: Draw wireframe on top if enabled
-            if self.show_wireframe_overlay:
-                glDisable(GL_DEPTH_TEST)  # Make wireframe always visible
-                glPolygonMode(GL_FRONT_AND_BACK, GL_LINE)
-                glColor3f(0.0, 0.0, 0.0)  # Black wireframe for maximum contrast
-                glLineWidth(1.2)  # Slightly thicker lines for visibility
-                
-                glBegin(GL_TRIANGLES)
-                for i, face in enumerate(self.uv_faces):
-                    if len(face) == 3:
-                        for vertex_idx in face:
-                            if vertex_idx < len(self.uv_vertices):
-                                uv = self.uv_vertices[vertex_idx]
-                                glVertex3f(uv[0], uv[1], 0)
-                glEnd()
-                
-                glEnable(GL_DEPTH_TEST)  # Re-enable depth test
-        
-        # Reset to defaults
-        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL)
-        glLineWidth(1.0)
-        
-    def draw_uv_boundary(self):
-        glColor3f(0.7, 0.7, 0.7)
-        glLineWidth(1.0)
-        glBegin(GL_LINE_LOOP)
-        glVertex3f(0, 0, 0)
-        glVertex3f(1, 0, 0)
-        glVertex3f(1, 1, 0)
-        glVertex3f(0, 1, 0)
-        glEnd()
-        
-        # Grid
-        glColor3f(0.9, 0.9, 0.9)
-        glLineWidth(0.5)
-        glBegin(GL_LINES)
-        for i in range(1, 4):
-            x = i * 0.25
-            glVertex3f(x, 0, 0)
-            glVertex3f(x, 1, 0)
-        for i in range(1, 4):
-            y = i * 0.25
-            glVertex3f(0, y, 0)
-            glVertex3f(1, y, 0)
-        glEnd()
-        
-        glLineWidth(1.0)
-        
-    def set_display_mode(self, mode):
-        """Set display mode: 'wireframe' or 'heatmap'"""
-        self.display_mode = mode
-        self.update()
-        
-    def set_wireframe_overlay(self, show_wireframe):
-        """Set whether to show wireframe overlay in heatmap mode"""
-        self.show_wireframe_overlay = show_wireframe
-        self.update()
+    # ... (keep the existing UVLayoutViewer class exactly as before) ...
 
 class ComparisonViewer(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.vertices_3d = None
         self.faces_3d = None
+        self.uv_vertices = None
+        self.uv_faces = None
+        self.svg_scale = 100.0  # Pixels per unit for SVG export
+        self.seam_allowance = 0.0  # Additional border around pieces
         self.init_ui()
         
     def init_ui(self):
@@ -532,6 +99,12 @@ class ComparisonViewer(QWidget):
         
         controls_layout.addStretch()
         
+        # Export button
+        self.export_btn = QPushButton("Export Fabric Pattern")
+        self.export_btn.clicked.connect(self.export_fabric_pattern)
+        self.export_btn.setMaximumWidth(120)
+        controls_layout.addWidget(self.export_btn)
+        
         # Reset view button
         self.reset_view_btn = QPushButton("Reset Views")
         self.reset_view_btn.clicked.connect(self.reset_views)
@@ -540,10 +113,42 @@ class ComparisonViewer(QWidget):
         
         layout.addLayout(controls_layout)
         
+        # SVG Export settings
+        export_layout = QHBoxLayout()
+        export_layout.setContentsMargins(2, 2, 2, 2)
+        
+        export_layout.addWidget(QLabel("SVG Scale (px/cm):"))
+        self.scale_slider = QSlider(Qt.Horizontal)
+        self.scale_slider.setMinimum(50)
+        self.scale_slider.setMaximum(200)
+        self.scale_slider.setValue(100)
+        self.scale_slider.valueChanged.connect(self.on_scale_changed)
+        export_layout.addWidget(self.scale_slider)
+        
+        self.scale_label = QLabel("100")
+        self.scale_label.setMaximumWidth(30)
+        export_layout.addWidget(self.scale_label)
+        
+        export_layout.addSpacing(20)
+        
+        export_layout.addWidget(QLabel("Seam Allowance (mm):"))
+        self.seam_spinbox = QSpinBox()
+        self.seam_spinbox.setMinimum(0)
+        self.seam_spinbox.setMaximum(20)
+        self.seam_spinbox.setValue(0)
+        self.seam_spinbox.valueChanged.connect(self.on_seam_allowance_changed)
+        export_layout.addWidget(self.seam_spinbox)
+        
+        export_layout.addStretch()
+        
+        layout.addLayout(export_layout)
+        
     def set_mesh_data(self, vertices, faces, uv_vertices, uv_faces):
         """Set mesh data for both viewers"""
         self.vertices_3d = vertices
         self.faces_3d = faces
+        self.uv_vertices = uv_vertices
+        self.uv_faces = uv_faces
         self.mesh_viewer.set_mesh(vertices, faces)
         if uv_vertices is not None and uv_faces is not None:
             # Pass 3D data to compute distortion
@@ -567,6 +172,13 @@ class ComparisonViewer(QWidget):
         show_wireframe = (state == Qt.Checked)
         self.uv_viewer.set_wireframe_overlay(show_wireframe)
         
+    def on_scale_changed(self, value):
+        self.svg_scale = value
+        self.scale_label.setText(str(value))
+        
+    def on_seam_allowance_changed(self, value):
+        self.seam_allowance = value / 10.0  # Convert mm to cm
+        
     def reset_views(self):
         if hasattr(self.mesh_viewer, 'vertices') and self.mesh_viewer.vertices is not None:
             self.mesh_viewer.set_mesh(self.mesh_viewer.vertices, self.mesh_viewer.faces)
@@ -574,3 +186,242 @@ class ComparisonViewer(QWidget):
         if hasattr(self.uv_viewer, 'uv_vertices') and self.uv_viewer.uv_vertices is not None:
             self.uv_viewer.set_uv_layout(self.uv_viewer.uv_vertices, self.uv_viewer.uv_faces, 
                                        self.vertices_3d, self.faces_3d)
+
+    def export_fabric_pattern(self):
+        """Export UV layout as SVG for fabric forming"""
+        if self.uv_vertices is None or self.uv_faces is None:
+            QMessageBox.warning(self, "Export Error", "No UV layout data available")
+            return
+            
+        filename, _ = QFileDialog.getSaveFileName(
+            self, "Save Fabric Pattern", "", "SVG Files (*.svg)")
+            
+        if not filename:
+            return
+            
+        try:
+            self.create_fabric_svg(filename)
+            QMessageBox.information(self, "Export Successful", 
+                                  f"Fabric pattern saved to:\n{filename}")
+        except Exception as e:
+            QMessageBox.critical(self, "Export Error", f"Failed to export SVG: {str(e)}")
+
+    def create_fabric_svg(self, filename):
+        """Create SVG file optimized for fabric forming"""
+        # Calculate bounding box of UV layout
+        if len(self.uv_vertices) == 0:
+            raise ValueError("No UV vertices available")
+            
+        u_coords = self.uv_vertices[:, 0]
+        v_coords = self.uv_vertices[:, 1]
+        
+        min_u, max_u = np.min(u_coords), np.max(u_coords)
+        min_v, max_v = np.min(v_coords), np.max(v_coords)
+        
+        width = (max_u - min_u) * self.svg_scale
+        height = (max_v - min_v) * self.svg_scale
+        
+        # Add margin for seam allowance and registration marks
+        margin = self.seam_allowance * self.svg_scale + 50  # 50px for registration marks
+        total_width = width + 2 * margin
+        total_height = height + 2 * margin
+        
+        # Create SVG root
+        svg = ET.Element('svg', {
+            'xmlns': 'http://www.w3.org/2000/svg',
+            'width': f'{total_width}px',
+            'height': f'{total_height}px',
+            'viewBox': f'0 0 {total_width} {total_height}'
+        })
+        
+        # Add background
+        background = ET.SubElement(svg, 'rect', {
+            'x': '0', 'y': '0', 
+            'width': str(total_width), 
+            'height': str(total_height),
+            'fill': 'white'
+        })
+        
+        # Add title and description
+        title = ET.SubElement(svg, 'title')
+        title.text = 'Fabric Forming Pattern'
+        
+        desc = ET.SubElement(svg, 'desc')
+        desc.text = f'UV conformal map for fabric forming. Scale: {self.svg_scale}px/cm, Seam allowance: {self.seam_allowance}cm'
+        
+        # Transform group for the actual pattern
+        pattern_group = ET.SubElement(svg, 'g', {
+            'transform': f'translate({margin} {margin}) scale({self.svg_scale} -{self.svg_scale}) translate(0 -{max_v - min_v})'
+        })
+        
+        # Draw triangles with optional seam allowance
+        for face in self.uv_faces:
+            if len(face) == 3:
+                points = []
+                for vertex_idx in face:
+                    if vertex_idx < len(self.uv_vertices):
+                        uv = self.uv_vertices[vertex_idx]
+                        # Apply seam allowance by offsetting points outward from center
+                        if self.seam_allowance > 0:
+                            # Calculate face center
+                            face_uvs = [self.uv_vertices[face[i]] for i in range(3)]
+                            center = np.mean(face_uvs, axis=0)
+                            # Offset point away from center
+                            direction = uv - center
+                            dir_length = np.linalg.norm(direction)
+                            if dir_length > 1e-10:
+                                offset_uv = uv + (direction / dir_length) * self.seam_allowance
+                                points.append(f"{offset_uv[0] - min_u},{offset_uv[1] - min_v}")
+                            else:
+                                points.append(f"{uv[0] - min_u},{uv[1] - min_v}")
+                        else:
+                            points.append(f"{uv[0] - min_u},{uv[1] - min_v}")
+                
+                if len(points) == 3:
+                    # Create triangle
+                    triangle = ET.SubElement(pattern_group, 'polygon', {
+                        'points': ' '.join(points),
+                        'fill': 'none',
+                        'stroke': 'black',
+                        'stroke-width': str(0.5 / self.svg_scale),  # Scale line width
+                        'stroke-linejoin': 'round'
+                    })
+        
+        # Add registration marks
+        self.add_registration_marks(svg, total_width, total_height, margin)
+        
+        # Add scale indicator
+        self.add_scale_indicator(svg, total_width, total_height)
+        
+        # Add cutting instructions
+        self.add_cutting_instructions(svg, total_width, total_height)
+        
+        # Write SVG file
+        tree = ET.ElementTree(svg)
+        tree.write(filename, encoding='utf-8', xml_declaration=True)
+
+    def add_registration_marks(self, svg, width, height, margin):
+        """Add registration marks for alignment"""
+        marks = [
+            (margin/2, margin/2),  # Top-left
+            (width - margin/2, margin/2),  # Top-right
+            (margin/2, height - margin/2),  # Bottom-left
+            (width - margin/2, height - margin/2),  # Bottom-right
+            (width/2, margin/2),  # Top-center
+            (width/2, height - margin/2),  # Bottom-center
+        ]
+        
+        for x, y in marks:
+            # Crosshair
+            ET.SubElement(svg, 'line', {
+                'x1': str(x - 10), 'y1': str(y),
+                'x2': str(x + 10), 'y2': str(y),
+                'stroke': 'red', 'stroke-width': '1'
+            })
+            ET.SubElement(svg, 'line', {
+                'x1': str(x), 'y1': str(y - 10),
+                'x2': str(x), 'y2': str(y + 10),
+                'stroke': 'red', 'stroke-width': '1'
+            })
+            # Circle
+            ET.SubElement(svg, 'circle', {
+                'cx': str(x), 'cy': str(y), 'r': '8',
+                'fill': 'none', 'stroke': 'red', 'stroke-width': '1'
+            })
+
+    def add_scale_indicator(self, svg, width, height):
+        """Add scale indicator bar"""
+        bar_length = 5.0 * self.svg_scale  # 5cm scale bar
+        bar_x = 20
+        bar_y = height - 40
+        
+        # Scale bar
+        ET.SubElement(svg, 'line', {
+            'x1': str(bar_x), 'y1': str(bar_y),
+            'x2': str(bar_x + bar_length), 'y2': str(bar_y),
+            'stroke': 'black', 'stroke-width': '3'
+        })
+        
+        # Labels
+        ET.SubElement(svg, 'text', {
+            'x': str(bar_x), 'y': str(bar_y - 10),
+            'font-family': 'Arial', 'font-size': '12', 'fill': 'black'
+        }).text = '0'
+        
+        ET.SubElement(svg, 'text', {
+            'x': str(bar_x + bar_length), 'y': str(bar_y - 10),
+            'font-family': 'Arial', 'font-size': '12', 'fill': 'black',
+            'text-anchor': 'end'
+        }).text = '5 cm'
+        
+        # Title
+        ET.SubElement(svg, 'text', {
+            'x': str(bar_x), 'y': str(bar_y - 25),
+            'font-family': 'Arial', 'font-size': '14', 'fill': 'black',
+            'font-weight': 'bold'
+        }).text = 'Scale Indicator'
+
+    def add_cutting_instructions(self, svg, width, height):
+        """Add cutting and assembly instructions"""
+        instructions = [
+            "FABRIC FORMING PATTERN INSTRUCTIONS:",
+            "1. Print this pattern at 100% scale",
+            "2. Cut along all black lines",
+            "3. Place on pre-stretched fabric",
+            "4. Adhere pattern to fabric",
+            "5. Release fabric tension to form 3D shape"
+        ]
+        
+        text_x = 20
+        text_y = 30
+        
+        for i, line in enumerate(instructions):
+            ET.SubElement(svg, 'text', {
+                'x': str(text_x), 'y': str(text_y + i * 18),
+                'font-family': 'Arial', 'font-size': '12', 'fill': 'blue',
+                'font-weight': 'bold' if i == 0 else 'normal'
+            }).text = line
+
+# Update the main window to include the comparison viewer
+class MainWindow(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("UV Conformal Map Tool - Fabric Forming")
+        self.setGeometry(100, 100, 1400, 800)
+        
+        layout = QVBoxLayout(self)
+        
+        # Add comparison viewer
+        self.comparison_viewer = ComparisonViewer()
+        layout.addWidget(self.comparison_viewer)
+        
+        # Example usage - you would replace this with your actual mesh loading
+        # self.load_example_mesh()
+
+    def load_example_mesh(self):
+        """Load an example mesh for testing"""
+        # This would be replaced with your actual mesh loading code
+        # For now, create a simple cube
+        vertices = np.array([
+            [-1, -1, -1], [1, -1, -1], [1, 1, -1], [-1, 1, -1],
+            [-1, -1, 1], [1, -1, 1], [1, 1, 1], [-1, 1, 1]
+        ], dtype=np.float32)
+        
+        faces = np.array([
+            [0, 1, 2], [2, 3, 0],  # front
+            [1, 5, 6], [6, 2, 1],  # right
+            [5, 4, 7], [7, 6, 5],  # back
+            [4, 0, 3], [3, 7, 4],  # left
+            [3, 2, 6], [6, 7, 3],  # top
+            [4, 5, 1], [1, 0, 4]   # bottom
+        ], dtype=np.int32)
+        
+        # Simple UV mapping (this would come from your conformal mapping)
+        uv_vertices = np.array([
+            [0.2, 0.2], [0.4, 0.2], [0.4, 0.4], [0.2, 0.4],
+            [0.6, 0.2], [0.8, 0.2], [0.8, 0.4], [0.6, 0.4]
+        ], dtype=np.float32)
+        
+        uv_faces = faces  # Same connectivity
+        
+        self.comparison_viewer.set_mesh_data(vertices, faces, uv_vertices, uv_faces)
