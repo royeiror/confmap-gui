@@ -165,6 +165,7 @@ class UVLayoutViewer(QOpenGLWidget):
         self.display_mode = "wireframe"  # "wireframe", "heatmap"
         self.distortion = None  # Conformal distortion values per face
         self.distortion_range = (0.0, 1.0)  # Auto-adjusting range
+        self.show_wireframe_overlay = True  # Optional wireframe in heatmap mode
         
     def set_uv_layout(self, uv_vertices, uv_faces, vertices_3d=None, faces_3d=None):
         """Set UV layout data and compute distortion if 3D data is provided"""
@@ -246,7 +247,7 @@ class UVLayoutViewer(QOpenGLWidget):
                 self.distortion_range = (0.0, 1.0)
     
     def get_heatmap_color(self, distortion_value):
-        """Convert distortion value to high-contrast heatmap color with 10-bit resolution"""
+        """Convert distortion value to standard blue-to-red heatmap color"""
         # Normalize to current range
         min_val, max_val = self.distortion_range
         if max_val > min_val:
@@ -257,34 +258,29 @@ class UVLayoutViewer(QOpenGLWidget):
         # Clamp to [0, 1]
         normalized = max(0.0, min(1.0, normalized))
         
-        # High-contrast 6-color gradient with clear transitions
-        if normalized < 0.2:
-            # Dark Blue to Blue
-            t = normalized / 0.2
-            r = 0.0
-            g = 0.0
-            b = 0.5 + 0.5 * t
-        elif normalized < 0.4:
+        # Standard blue-to-red heatmap
+        # Blue (0.0) -> Cyan -> Green -> Yellow -> Red (1.0)
+        if normalized < 0.25:
             # Blue to Cyan
-            t = (normalized - 0.2) / 0.2
+            t = normalized / 0.25
             r = 0.0
             g = t
             b = 1.0
-        elif normalized < 0.6:
+        elif normalized < 0.5:
             # Cyan to Green
-            t = (normalized - 0.4) / 0.2
+            t = (normalized - 0.25) / 0.25
             r = 0.0
             g = 1.0
             b = 1.0 - t
-        elif normalized < 0.8:
+        elif normalized < 0.75:
             # Green to Yellow
-            t = (normalized - 0.6) / 0.2
+            t = (normalized - 0.5) / 0.25
             r = t
             g = 1.0
             b = 0.0
         else:
             # Yellow to Red
-            t = (normalized - 0.8) / 0.2
+            t = (normalized - 0.75) / 0.25
             r = 1.0
             g = 1.0 - t
             b = 0.0
@@ -339,7 +335,7 @@ class UVLayoutViewer(QOpenGLWidget):
             glEnd()
             
         elif self.display_mode == "heatmap" and self.distortion is not None:
-            # Heatmap with wireframe overlay - TWO PASS RENDERING
+            # Heatmap with optional wireframe overlay
             
             # PASS 1: Draw filled triangles with heatmap colors
             glPolygonMode(GL_FRONT_AND_BACK, GL_FILL)
@@ -356,23 +352,23 @@ class UVLayoutViewer(QOpenGLWidget):
                             glVertex3f(uv[0], uv[1], 0)
             glEnd()
             
-            # PASS 2: Draw wireframe on top - MUST disable depth test for overlay
-            glDisable(GL_DEPTH_TEST)  # Important: make wireframe always visible
-            glPolygonMode(GL_FRONT_AND_BACK, GL_LINE)
-            glColor3f(0.0, 0.0, 0.0)  # Black wireframe for maximum contrast
-            glLineWidth(1.5)  # Thicker lines for visibility
-            
-            glBegin(GL_TRIANGLES)
-            for i, face in enumerate(self.uv_faces):
-                if len(face) == 3:
-                    for vertex_idx in face:
-                        if vertex_idx < len(self.uv_vertices):
-                            uv = self.uv_vertices[vertex_idx]
-                            glVertex3f(uv[0], uv[1], 0)
-            glEnd()
-            
-            # Re-enable depth test
-            glEnable(GL_DEPTH_TEST)
+            # PASS 2: Draw wireframe on top if enabled
+            if self.show_wireframe_overlay:
+                glDisable(GL_DEPTH_TEST)  # Make wireframe always visible
+                glPolygonMode(GL_FRONT_AND_BACK, GL_LINE)
+                glColor3f(0.0, 0.0, 0.0)  # Black wireframe for maximum contrast
+                glLineWidth(1.2)  # Slightly thicker lines for visibility
+                
+                glBegin(GL_TRIANGLES)
+                for i, face in enumerate(self.uv_faces):
+                    if len(face) == 3:
+                        for vertex_idx in face:
+                            if vertex_idx < len(self.uv_vertices):
+                                uv = self.uv_vertices[vertex_idx]
+                                glVertex3f(uv[0], uv[1], 0)
+                glEnd()
+                
+                glEnable(GL_DEPTH_TEST)  # Re-enable depth test
         
         # Reset to defaults
         glPolygonMode(GL_FRONT_AND_BACK, GL_FILL)
@@ -407,6 +403,11 @@ class UVLayoutViewer(QOpenGLWidget):
     def set_display_mode(self, mode):
         """Set display mode: 'wireframe' or 'heatmap'"""
         self.display_mode = mode
+        self.update()
+        
+    def set_wireframe_overlay(self, show_wireframe):
+        """Set whether to show wireframe overlay in heatmap mode"""
+        self.show_wireframe_overlay = show_wireframe
         self.update()
 
 class ComparisonViewer(QWidget):
@@ -446,7 +447,7 @@ class ComparisonViewer(QWidget):
         right_layout.setContentsMargins(2, 2, 2, 2)
         right_layout.setSpacing(2)
         
-        right_label = QLabel("UV Layout • Black wireframe • High-contrast heatmap")
+        right_label = QLabel("UV Layout • Blue=low distortion, Red=high distortion")
         right_label.setMaximumHeight(15)
         right_label.setAlignment(Qt.AlignCenter)
         right_label.setStyleSheet("color: gray; font-size: 9px;")
@@ -471,13 +472,20 @@ class ComparisonViewer(QWidget):
         
         controls_layout.addSpacing(20)
         
-        # UV view controls - REMOVED "Colored Faces" option
+        # UV view controls
         controls_layout.addWidget(QLabel("UV:"))
         
         self.uv_mode_combo = QComboBox()
         self.uv_mode_combo.addItems(["Wireframe", "Conformal Distortion"])
         self.uv_mode_combo.currentTextChanged.connect(self.on_uv_mode_changed)
         controls_layout.addWidget(self.uv_mode_combo)
+        
+        # UV wireframe overlay checkbox (only visible in heatmap mode)
+        self.wireframe_uv_checkbox = QCheckBox("Show Wireframe")
+        self.wireframe_uv_checkbox.setChecked(True)  # Default to on
+        self.wireframe_uv_checkbox.stateChanged.connect(self.on_uv_wireframe_changed)
+        self.wireframe_uv_checkbox.setVisible(False)  # Hidden initially
+        controls_layout.addWidget(self.wireframe_uv_checkbox)
         
         controls_layout.addStretch()
         
@@ -506,8 +514,15 @@ class ComparisonViewer(QWidget):
         """Handle UV display mode change"""
         if mode_text == "Wireframe":
             self.uv_viewer.set_display_mode("wireframe")
+            self.wireframe_uv_checkbox.setVisible(False)  # Hide wireframe option
         elif mode_text == "Conformal Distortion":
             self.uv_viewer.set_display_mode("heatmap")
+            self.wireframe_uv_checkbox.setVisible(True)  # Show wireframe option
+        
+    def on_uv_wireframe_changed(self, state):
+        """Handle UV wireframe overlay toggle"""
+        show_wireframe = (state == Qt.Checked)
+        self.uv_viewer.set_wireframe_overlay(show_wireframe)
         
     def reset_views(self):
         if hasattr(self.mesh_viewer, 'vertices') and self.mesh_viewer.vertices is not None:
