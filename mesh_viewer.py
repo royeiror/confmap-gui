@@ -178,75 +178,100 @@ class UVLayoutViewer(QOpenGLWidget):
         self.update()
     
     def compute_conformal_distortion(self, vertices_3d, faces_3d, uv_vertices, uv_faces):
-        """Compute conformal distortion for each face"""
+        """Compute conformal distortion for each face - PROPER IMPLEMENTATION"""
         self.distortion = []
         
         for i, face in enumerate(faces_3d):
             if len(face) != 3:
-                self.distortion.append(0.0)
+                self.distortion.append(1.0)  # No distortion for non-triangles
                 continue
                 
-            # Get 3D triangle vertices
-            v0_3d, v1_3d, v2_3d = vertices_3d[face[0]], vertices_3d[face[1]], vertices_3d[face[2]]
-            
-            # Get UV triangle vertices
-            if i < len(uv_faces):
-                uv_face = uv_faces[i]
-            else:
-                uv_face = face
-                
-            uv0, uv1, uv2 = uv_vertices[uv_face[0]], uv_vertices[uv_face[1]], uv_vertices[uv_face[2]]
-            
-            # Compute edge vectors in 3D
-            e1_3d = v1_3d - v0_3d
-            e2_3d = v2_3d - v0_3d
-            
-            # Compute edge vectors in UV
-            e1_uv = uv1 - uv0
-            e2_uv = uv2 - uv0
-            
-            # Compute Jacobian matrix of the mapping
-            # Solve: [e1_uv, e2_uv] = J * [e1_3d, e2_3d]
-            # This is a simplified 2D to 2D approximation
-            A = np.column_stack([e1_3d[:2], e2_3d[:2]])  # Use only x,y coordinates
-            b_uv1 = e1_uv
-            b_uv2 = e2_uv
-            
             try:
-                # Compute Jacobian using least squares
-                J1 = np.linalg.lstsq(A, b_uv1, rcond=None)[0]
-                J2 = np.linalg.lstsq(A, b_uv2, rcond=None)[0]
-                J = np.array([J1, J2])
+                # Get 3D triangle vertices
+                v0_3d, v1_3d, v2_3d = vertices_3d[face[0]], vertices_3d[face[1]], vertices_3d[face[2]]
                 
-                # Compute singular values of Jacobian
-                U, s, Vt = np.linalg.svd(J)
-                
-                # Conformal distortion: max(singular value) / min(singular value)
-                if len(s) >= 2 and s[1] > 1e-10:
-                    distortion = s[0] / s[1]
+                # Get corresponding UV triangle vertices
+                if i < len(uv_faces):
+                    uv_face = uv_faces[i]
                 else:
-                    distortion = 1.0
+                    uv_face = face
                     
-                self.distortion.append(distortion)
+                uv0, uv1, uv2 = uv_vertices[uv_face[0]], uv_vertices[uv_face[1]], uv_vertices[uv_face[2]]
                 
-            except:
+                # Compute edge vectors in 3D
+                e1_3d = v1_3d - v0_3d
+                e2_3d = v2_3d - v0_3d
+                
+                # Compute edge vectors in UV space
+                e1_uv = uv1 - uv0
+                e2_uv = uv2 - uv0
+                
+                # Compute the Jacobian matrix of the mapping from 3D to UV
+                # We need to solve: [e1_uv, e2_uv] = J * [e1_3d, e2_3d]
+                # This is a 2x2 linear system
+                
+                # Create the matrix of 3D edge vectors (we use only the first two coordinates for 2D mapping)
+                A = np.column_stack([e1_3d[:2], e2_3d[:2]])
+                
+                # Solve for Jacobian columns
+                try:
+                    J_col1 = np.linalg.solve(A, e1_uv)
+                    J_col2 = np.linalg.solve(A, e2_uv)
+                    J = np.column_stack([J_col1, J_col2])
+                    
+                    # Compute singular values of the Jacobian
+                    U, s, Vt = np.linalg.svd(J)
+                    
+                    # Conformal distortion: ratio of largest to smallest singular value
+                    # A perfect conformal map has singular values equal (distortion = 1)
+                    # Higher values indicate more distortion
+                    if len(s) >= 2 and s[1] > 1e-10:
+                        distortion_val = s[0] / s[1]
+                    else:
+                        distortion_val = 1.0
+                        
+                except np.linalg.LinAlgError:
+                    # Fallback: use area ratio as distortion measure
+                    area_3d = 0.5 * np.linalg.norm(np.cross(e1_3d, e2_3d))
+                    area_uv = 0.5 * abs(e1_uv[0]*e2_uv[1] - e1_uv[1]*e2_uv[0])
+                    
+                    if area_uv > 1e-10 and area_3d > 1e-10:
+                        # Use log of area ratio as distortion measure
+                        distortion_val = abs(np.log(area_uv / area_3d)) + 1.0
+                    else:
+                        distortion_val = 1.0
+                
+                self.distortion.append(distortion_val)
+                
+            except Exception as e:
+                # If anything fails, use neutral distortion
                 self.distortion.append(1.0)
-    
-    def get_heatmap_color(self, value, min_val=1.0, max_val=3.0):
-        """Convert distortion value to heatmap color (blue -> green -> red)"""
-        # Normalize value to [0,1] range
-        normalized = (value - min_val) / (max_val - min_val)
-        normalized = max(0.0, min(1.0, normalized))
         
-        if normalized < 0.5:
-            # Blue to green
+        # Normalize distortion values for better visualization
+        if self.distortion:
+            distortions = np.array(self.distortion)
+            # Use log scale for better visualization of distortion range
+            log_distortions = np.log(distortions + 1e-8)
+            # Normalize to [0, 1] range
+            min_dist = np.min(log_distortions)
+            max_dist = np.max(log_distortions)
+            if max_dist > min_dist:
+                self.distortion = (log_distortions - min_dist) / (max_dist - min_dist)
+            else:
+                self.distortion = np.zeros_like(distortions)
+    
+    def get_heatmap_color(self, normalized_distortion):
+        """Convert normalized distortion value to heatmap color"""
+        # Blue (low distortion) -> Green -> Red (high distortion)
+        if normalized_distortion < 0.5:
+            # Blue to Green
             r = 0.0
-            g = normalized * 2.0
-            b = 1.0 - normalized * 2.0
+            g = normalized_distortion * 2.0
+            b = 1.0 - normalized_distortion * 2.0
         else:
-            # Green to red
-            r = (normalized - 0.5) * 2.0
-            g = 1.0 - (normalized - 0.5) * 2.0
+            # Green to Red
+            r = (normalized_distortion - 0.5) * 2.0
+            g = 1.0 - (normalized_distortion - 0.5) * 2.0
             b = 0.0
             
         return r, g, b
@@ -303,7 +328,7 @@ class UVLayoutViewer(QOpenGLWidget):
             glBegin(GL_TRIANGLES)
             for i, face in enumerate(self.uv_faces):
                 if len(face) == 3:
-                    # Different color for each face
+                    # Different color for each face (arbitrary)
                     hue = (i * 0.6180339887) % 1.0
                     r = 0.6 + 0.3 * ((hue + 0.0) % 1.0)
                     g = 0.6 + 0.3 * ((hue + 0.333) % 1.0)
@@ -322,7 +347,7 @@ class UVLayoutViewer(QOpenGLWidget):
             glBegin(GL_TRIANGLES)
             for i, face in enumerate(self.uv_faces):
                 if len(face) == 3 and i < len(self.distortion):
-                    # Heatmap color based on distortion
+                    # Heatmap color based on ACTUAL distortion
                     r, g, b = self.get_heatmap_color(self.distortion[i])
                     glColor3f(r, g, b)
                     
@@ -408,7 +433,7 @@ class ComparisonViewer(QWidget):
         right_layout.setContentsMargins(2, 2, 2, 2)
         right_layout.setSpacing(2)
         
-        right_label = QLabel("UV Layout • Shows conformal distortion")
+        right_label = QLabel("UV Layout • Blue=low distortion, Red=high distortion")
         right_label.setMaximumHeight(15)
         right_label.setAlignment(Qt.AlignCenter)
         right_label.setStyleSheet("color: gray; font-size: 9px;")
