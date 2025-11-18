@@ -4,4 +4,3 @@ numpy>=1.21.0
 scipy>=1.7.0
 PyOpenGL>=3.1.0
 PyOpenGL-accelerate>=3.1.0
-trimesh>=3.9.0
