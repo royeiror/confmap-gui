@@ -775,4 +775,104 @@ class ComparisonViewer(QWidget):
 
     def add_scale_indicator(self, svg, width, height):
         """Add scale indicator bar"""
-        bar_length =
+        bar_length = 5.0 * self.svg_scale  # 5cm scale bar
+        bar_x = 20
+        bar_y = height - 40
+        
+        # Scale bar
+        ET.SubElement(svg, 'line', {
+            'x1': str(bar_x), 'y1': str(bar_y),
+            'x2': str(bar_x + bar_length), 'y2': str(bar_y),
+            'stroke': 'black', 'stroke-width': '3'
+        })
+        
+        # Labels
+        ET.SubElement(svg, 'text', {
+            'x': str(bar_x), 'y': str(bar_y - 10),
+            'font-family': 'Arial', 'font-size': '12', 'fill': 'black'
+        }).text = '0'
+        
+        ET.SubElement(svg, 'text', {
+            'x': str(bar_x + bar_length), 'y': str(bar_y - 10),
+            'font-family': 'Arial', 'font-size': '12', 'fill': 'black',
+            'text-anchor': 'end'
+        }).text = '5 cm'
+        
+        # Title
+        ET.SubElement(svg, 'text', {
+            'x': str(bar_x), 'y': str(bar_y - 25),
+            'font-family': 'Arial', 'font-size': '14', 'fill': 'black',
+            'font-weight': 'bold'
+        }).text = 'Scale Indicator'
+
+    def add_cutting_instructions(self, svg, width, height):
+        """Add cutting and assembly instructions"""
+        instructions = [
+            "FABRIC FORMING PATTERN INSTRUCTIONS:",
+            "1. Print this pattern at 100% scale",
+            "2. Cut along all black lines",
+            "3. Place on pre-stretched fabric",
+            "4. Adhere pattern to fabric",
+            "5. Release fabric tension to form 3D shape"
+        ]
+        
+        text_x = 20
+        text_y = 30
+        
+        for i, line in enumerate(instructions):
+            ET.SubElement(svg, 'text', {
+                'x': str(text_x), 'y': str(text_y + i * 18),
+                'font-family': 'Arial', 'font-size': '12', 'fill': 'blue',
+                'font-weight': 'bold' if i == 0 else 'normal'
+            }).text = line
+
+
+class MainWindow(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("UV Conformal Map Tool - Fabric Forming")
+        self.setGeometry(100, 100, 1400, 800)
+        
+        layout = QVBoxLayout(self)
+        
+        # Add comparison viewer
+        self.comparison_viewer = ComparisonViewer()
+        layout.addWidget(self.comparison_viewer)
+        
+        # Example usage - you would replace this with your actual mesh loading
+        # self.load_example_mesh()
+
+    def load_example_mesh(self):
+        """Load an example mesh for testing"""
+        # This would be replaced with your actual mesh loading code
+        # For now, create a simple cube
+        vertices = np.array([
+            [-1, -1, -1], [1, -1, -1], [1, 1, -1], [-1, 1, -1],
+            [-1, -1, 1], [1, -1, 1], [1, 1, 1], [-1, 1, 1]
+        ], dtype=np.float32)
+        
+        faces = np.array([
+            [0, 1, 2], [2, 3, 0],  # front
+            [1, 5, 6], [6, 2, 1],  # right
+            [5, 4, 7], [7, 6, 5],  # back
+            [4, 0, 3], [3, 7, 4],  # left
+            [3, 2, 6], [6, 7, 3],  # top
+            [4, 5, 1], [1, 0, 4]   # bottom
+        ], dtype=np.int32)
+        
+        # Simple UV mapping (this would come from your conformal mapping)
+        uv_vertices = np.array([
+            [0.2, 0.2], [0.4, 0.2], [0.4, 0.4], [0.2, 0.4],
+            [0.6, 0.2], [0.8, 0.2], [0.8, 0.4], [0.6, 0.4]
+        ], dtype=np.float32)
+        
+        uv_faces = faces  # Same connectivity
+        
+        self.comparison_viewer.set_mesh_data(vertices, faces, uv_vertices, uv_faces)
+
+
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    window = MainWindow()
+    window.show()
+    sys.exit(app.exec_())
