@@ -162,9 +162,9 @@ class UVLayoutViewer(QOpenGLWidget):
         super().__init__(parent)
         self.uv_vertices = None
         self.uv_faces = None
-        self.display_mode = "wireframe"  # "wireframe", "colored", "heatmap"
+        self.display_mode = "wireframe"  # "wireframe", "heatmap"
         self.distortion = None  # Conformal distortion values per face
-        self.show_wireframe_overlay = True  # Always show wireframe in heatmap mode
+        self.distortion_range = (0.0, 1.0)  # Auto-adjusting range
         
     def set_uv_layout(self, uv_vertices, uv_faces, vertices_3d=None, faces_3d=None):
         """Set UV layout data and compute distortion if 3D data is provided"""
@@ -223,8 +223,7 @@ class UVLayoutViewer(QOpenGLWidget):
                 scale_factor = np.sqrt(area_uv / area_3d)
                 
                 # Conformal distortion: how much the scale deviates from ideal
-                # For perfect conformal map, scale should be consistent across mesh
-                # We'll use the absolute log of the scale factor as distortion measure
+                # Use log scale for better visualization
                 distortion_val = abs(np.log(scale_factor))
                 
                 self.distortion.append(distortion_val)
@@ -233,37 +232,61 @@ class UVLayoutViewer(QOpenGLWidget):
                 # If anything fails, use neutral distortion
                 self.distortion.append(0.0)
         
-        # Normalize distortion values for visualization
+        # Auto-adjust distortion range for better visualization
         if self.distortion:
             distortions = np.array(self.distortion)
             if np.max(distortions) > 0:
-                # Normalize to [0, 1] range
-                self.distortion = distortions / np.max(distortions)
+                # Use 95th percentile to avoid outliers dominating the color scale
+                q95 = np.percentile(distortions, 95)
+                if q95 > 0:
+                    self.distortion_range = (0.0, q95)
+                else:
+                    self.distortion_range = (0.0, np.max(distortions))
             else:
-                self.distortion = np.zeros_like(distortions)
+                self.distortion_range = (0.0, 1.0)
     
-    def get_heatmap_color(self, normalized_distortion):
-        """Convert normalized distortion value to heatmap color"""
-        # Blue (low distortion) -> Cyan -> Green -> Yellow -> Red (high distortion)
-        if normalized_distortion < 0.25:
-            # Blue to Cyan
+    def get_heatmap_color(self, distortion_value):
+        """Convert distortion value to high-contrast heatmap color with 10-bit resolution"""
+        # Normalize to current range
+        min_val, max_val = self.distortion_range
+        if max_val > min_val:
+            normalized = (distortion_value - min_val) / (max_val - min_val)
+        else:
+            normalized = 0.0
+        
+        # Clamp to [0, 1]
+        normalized = max(0.0, min(1.0, normalized))
+        
+        # High-contrast 6-color gradient with clear transitions
+        if normalized < 0.2:
+            # Dark Blue to Blue
+            t = normalized / 0.2
             r = 0.0
-            g = normalized_distortion * 4.0
+            g = 0.0
+            b = 0.5 + 0.5 * t
+        elif normalized < 0.4:
+            # Blue to Cyan
+            t = (normalized - 0.2) / 0.2
+            r = 0.0
+            g = t
             b = 1.0
-        elif normalized_distortion < 0.5:
+        elif normalized < 0.6:
             # Cyan to Green
+            t = (normalized - 0.4) / 0.2
             r = 0.0
             g = 1.0
-            b = 1.0 - (normalized_distortion - 0.25) * 4.0
-        elif normalized_distortion < 0.75:
+            b = 1.0 - t
+        elif normalized < 0.8:
             # Green to Yellow
-            r = (normalized_distortion - 0.5) * 4.0
+            t = (normalized - 0.6) / 0.2
+            r = t
             g = 1.0
             b = 0.0
         else:
             # Yellow to Red
+            t = (normalized - 0.8) / 0.2
             r = 1.0
-            g = 1.0 - (normalized_distortion - 0.75) * 4.0
+            g = 1.0 - t
             b = 0.0
             
         return r, g, b
@@ -315,31 +338,11 @@ class UVLayoutViewer(QOpenGLWidget):
                             glVertex3f(uv[0], uv[1], 0)
             glEnd()
             
-        elif self.display_mode == "colored":
-            # Colored faces only
-            glPolygonMode(GL_FRONT_AND_BACK, GL_FILL)
-            
-            glBegin(GL_TRIANGLES)
-            for i, face in enumerate(self.uv_faces):
-                if len(face) == 3:
-                    # Different color for each face (arbitrary)
-                    hue = (i * 0.6180339887) % 1.0
-                    r = 0.6 + 0.3 * ((hue + 0.0) % 1.0)
-                    g = 0.6 + 0.3 * ((hue + 0.333) % 1.0)
-                    b = 0.6 + 0.3 * ((hue + 0.666) % 1.0)
-                    glColor3f(r, g, b)
-                    
-                    for vertex_idx in face:
-                        if vertex_idx < len(self.uv_vertices):
-                            uv = self.uv_vertices[vertex_idx]
-                            glVertex3f(uv[0], uv[1], 0)
-            glEnd()
-            
         elif self.display_mode == "heatmap" and self.distortion is not None:
-            # Heatmap with wireframe overlay
-            # First draw filled triangles with heatmap colors
-            glPolygonMode(GL_FRONT_AND_BACK, GL_FILL)
+            # Heatmap with wireframe overlay - TWO PASS RENDERING
             
+            # PASS 1: Draw filled triangles with heatmap colors
+            glPolygonMode(GL_FRONT_AND_BACK, GL_FILL)
             glBegin(GL_TRIANGLES)
             for i, face in enumerate(self.uv_faces):
                 if len(face) == 3 and i < len(self.distortion):
@@ -353,20 +356,23 @@ class UVLayoutViewer(QOpenGLWidget):
                             glVertex3f(uv[0], uv[1], 0)
             glEnd()
             
-            # Then draw wireframe on top
-            if self.show_wireframe_overlay:
-                glPolygonMode(GL_FRONT_AND_BACK, GL_LINE)
-                glColor3f(0.1, 0.1, 0.1)  # Dark wireframe
-                glLineWidth(1.0)
-                
-                glBegin(GL_TRIANGLES)
-                for i, face in enumerate(self.uv_faces):
-                    if len(face) == 3:
-                        for vertex_idx in face:
-                            if vertex_idx < len(self.uv_vertices):
-                                uv = self.uv_vertices[vertex_idx]
-                                glVertex3f(uv[0], uv[1], 0)
-                glEnd()
+            # PASS 2: Draw wireframe on top - MUST disable depth test for overlay
+            glDisable(GL_DEPTH_TEST)  # Important: make wireframe always visible
+            glPolygonMode(GL_FRONT_AND_BACK, GL_LINE)
+            glColor3f(0.0, 0.0, 0.0)  # Black wireframe for maximum contrast
+            glLineWidth(1.5)  # Thicker lines for visibility
+            
+            glBegin(GL_TRIANGLES)
+            for i, face in enumerate(self.uv_faces):
+                if len(face) == 3:
+                    for vertex_idx in face:
+                        if vertex_idx < len(self.uv_vertices):
+                            uv = self.uv_vertices[vertex_idx]
+                            glVertex3f(uv[0], uv[1], 0)
+            glEnd()
+            
+            # Re-enable depth test
+            glEnable(GL_DEPTH_TEST)
         
         # Reset to defaults
         glPolygonMode(GL_FRONT_AND_BACK, GL_FILL)
@@ -399,7 +405,7 @@ class UVLayoutViewer(QOpenGLWidget):
         glLineWidth(1.0)
         
     def set_display_mode(self, mode):
-        """Set display mode: 'wireframe', 'colored', or 'heatmap'"""
+        """Set display mode: 'wireframe' or 'heatmap'"""
         self.display_mode = mode
         self.update()
 
@@ -440,7 +446,7 @@ class ComparisonViewer(QWidget):
         right_layout.setContentsMargins(2, 2, 2, 2)
         right_layout.setSpacing(2)
         
-        right_label = QLabel("UV Layout • Heatmap shows area distortion • Dark wireframe overlay")
+        right_label = QLabel("UV Layout • Black wireframe • High-contrast heatmap")
         right_label.setMaximumHeight(15)
         right_label.setAlignment(Qt.AlignCenter)
         right_label.setStyleSheet("color: gray; font-size: 9px;")
@@ -465,11 +471,11 @@ class ComparisonViewer(QWidget):
         
         controls_layout.addSpacing(20)
         
-        # UV view controls
+        # UV view controls - REMOVED "Colored Faces" option
         controls_layout.addWidget(QLabel("UV:"))
         
         self.uv_mode_combo = QComboBox()
-        self.uv_mode_combo.addItems(["Wireframe", "Colored Faces", "Conformal Distortion"])
+        self.uv_mode_combo.addItems(["Wireframe", "Conformal Distortion"])
         self.uv_mode_combo.currentTextChanged.connect(self.on_uv_mode_changed)
         controls_layout.addWidget(self.uv_mode_combo)
         
@@ -500,8 +506,6 @@ class ComparisonViewer(QWidget):
         """Handle UV display mode change"""
         if mode_text == "Wireframe":
             self.uv_viewer.set_display_mode("wireframe")
-        elif mode_text == "Colored Faces":
-            self.uv_viewer.set_display_mode("colored")
         elif mode_text == "Conformal Distortion":
             self.uv_viewer.set_display_mode("heatmap")
         
