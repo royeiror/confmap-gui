@@ -179,7 +179,7 @@ class UVLayoutViewer(QOpenGLWidget):
         self.update()
     
     def compute_conformal_distortion(self, vertices_3d, faces_3d, uv_vertices, uv_faces):
-        """Compute conformal distortion for each face using area ratio method"""
+        """Compute conformal distortion for each face using conformal energy"""
         self.distortion = []
         
         for i, face in enumerate(faces_3d):
@@ -205,27 +205,48 @@ class UVLayoutViewer(QOpenGLWidget):
                     
                 uv0, uv1, uv2 = uv_vertices[uv_face[0]], uv_vertices[uv_face[1]], uv_vertices[uv_face[2]]
                 
-                # Compute 3D area
-                edge1_3d = v1_3d - v0_3d
-                edge2_3d = v2_3d - v0_3d
-                area_3d = 0.5 * np.linalg.norm(np.cross(edge1_3d, edge2_3d))
+                # Compute edge vectors in 3D
+                e1_3d = v1_3d - v0_3d
+                e2_3d = v2_3d - v0_3d
                 
-                # Compute UV area (in 2D)
-                edge1_uv = uv1 - uv0
-                edge2_uv = uv2 - uv0
-                area_uv = 0.5 * abs(edge1_uv[0]*edge2_uv[1] - edge1_uv[1]*edge2_uv[0])
+                # Compute edge vectors in UV
+                e1_uv = uv1 - uv0
+                e2_uv = uv2 - uv0
                 
-                # Avoid division by zero
-                if area_3d < 1e-10 or area_uv < 1e-10:
-                    self.distortion.append(0.0)
-                    continue
+                # Compute the Jacobian matrix (2x2) for the mapping
+                # We approximate the Jacobian using the triangle's edges
+                # J = [du/dx, du/dy; dv/dx, dv/dy]
                 
-                # Compute scale factor (how much the triangle was scaled in UV space)
-                scale_factor = np.sqrt(area_uv / area_3d)
+                # Create matrices for solving J * [e1_3d, e2_3d] = [e1_uv, e2_uv]
+                A = np.column_stack([e1_3d[:2], e2_3d[:2]])  # Use first two coordinates
+                B = np.column_stack([e1_uv, e2_uv])
                 
-                # Conformal distortion: how much the scale deviates from ideal
-                # Use log scale for better visualization
-                distortion_val = abs(np.log(scale_factor))
+                try:
+                    # Solve for Jacobian: J = B * A^(-1)
+                    J = B @ np.linalg.inv(A)
+                    
+                    # Compute the conformal energy: ||J^T J - (det J) I||^2
+                    # This measures deviation from conformality
+                    JtJ = J.T @ J
+                    detJ = np.linalg.det(J)
+                    identity = np.eye(2)
+                    
+                    # Conformal energy - higher values mean more distortion
+                    conformal_energy = np.linalg.norm(JtJ - detJ * identity) ** 2
+                    
+                    # Use log scale to make the values more manageable
+                    distortion_val = np.log(1.0 + conformal_energy)
+                    
+                except np.linalg.LinAlgError:
+                    # Fallback: use area ratio
+                    area_3d = 0.5 * np.linalg.norm(np.cross(e1_3d, e2_3d))
+                    area_uv = 0.5 * abs(e1_uv[0]*e2_uv[1] - e1_uv[1]*e2_uv[0])
+                    
+                    if area_3d > 1e-10 and area_uv > 1e-10:
+                        scale_ratio = max(area_uv / area_3d, area_3d / area_uv)
+                        distortion_val = np.log(scale_ratio)
+                    else:
+                        distortion_val = 0.0
                 
                 self.distortion.append(distortion_val)
                 
@@ -233,32 +254,41 @@ class UVLayoutViewer(QOpenGLWidget):
                 # If anything fails, use neutral distortion
                 self.distortion.append(0.0)
         
-        # Auto-adjust distortion range for better visualization
+        # Auto-adjust distortion range to ensure we use the full color spectrum
         if self.distortion:
             distortions = np.array(self.distortion)
-            if np.max(distortions) > 0:
-                # Use 95th percentile to avoid outliers dominating the color scale
-                q95 = np.percentile(distortions, 95)
-                if q95 > 0:
-                    self.distortion_range = (0.0, q95)
-                else:
-                    self.distortion_range = (0.0, np.max(distortions))
+            
+            # Remove extreme outliers using percentiles
+            q5 = np.percentile(distortions, 5)
+            q95 = np.percentile(distortions, 95)
+            
+            # Set range to cover most of the data, but ensure we have some range
+            if q95 > q5:
+                # Add some padding to ensure we see the full gradient
+                padding = (q95 - q5) * 0.1
+                self.distortion_range = (q5 - padding, q95 + padding)
             else:
-                self.distortion_range = (0.0, 1.0)
+                # If all values are similar, use a reasonable default range
+                if np.max(distortions) > 0:
+                    self.distortion_range = (0.0, np.max(distortions) * 1.5)
+                else:
+                    self.distortion_range = (0.0, 1.0)
     
     def get_heatmap_color(self, distortion_value):
-        """Convert distortion value to standard blue-to-red heatmap color"""
+        """Convert distortion value to full blue-to-red heatmap color"""
         # Normalize to current range
         min_val, max_val = self.distortion_range
-        if max_val > min_val:
-            normalized = (distortion_value - min_val) / (max_val - min_val)
-        else:
-            normalized = 0.0
         
-        # Clamp to [0, 1]
+        # If range is too small, expand it to ensure we see colors
+        if max_val - min_val < 1e-10:
+            normalized = 0.5  # Middle of the range
+        else:
+            normalized = (distortion_value - min_val) / (max_val - min_val)
+        
+        # Clamp to [0, 1] and ensure we use the full spectrum
         normalized = max(0.0, min(1.0, normalized))
         
-        # Standard blue-to-red heatmap
+        # Full blue-to-red heatmap with smooth transitions
         # Blue (0.0) -> Cyan -> Green -> Yellow -> Red (1.0)
         if normalized < 0.25:
             # Blue to Cyan
@@ -447,7 +477,7 @@ class ComparisonViewer(QWidget):
         right_layout.setContentsMargins(2, 2, 2, 2)
         right_layout.setSpacing(2)
         
-        right_label = QLabel("UV Layout • Blue=low distortion, Red=high distortion")
+        right_label = QLabel("UV Layout • Full spectrum: Blue (low) to Red (high distortion)")
         right_label.setMaximumHeight(15)
         right_label.setAlignment(Qt.AlignCenter)
         right_label.setStyleSheet("color: gray; font-size: 9px;")
