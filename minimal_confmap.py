@@ -1,5 +1,5 @@
 """
-Proper UV unwrapping implementation that produces clean results like the original confmap
+Proper UV unwrapping implementation with rectangular boundary matching original confmap
 """
 import numpy as np
 from scipy import sparse
@@ -58,7 +58,7 @@ def write_obj(file_path, vertices, faces, uv_vertices=None, uv_faces=None):
                 f.write(face_line + "\n")
 
 class BFF:
-    """Boundary First Flattening - produces clean UV layouts"""
+    """Boundary First Flattening - produces rectangular UV layouts"""
     
     def __init__(self, vertices, faces):
         self.vertices = vertices
@@ -151,8 +151,8 @@ class BFF:
         
         return L
     
-    def parameterize_boundary(self, boundary):
-        """Parameterize boundary vertices to a circle"""
+    def parameterize_boundary_rectangle(self, boundary):
+        """Parameterize boundary vertices to a rectangle (not a circle)"""
         n_boundary = len(boundary)
         if n_boundary == 0:
             return np.zeros((0, 2))
@@ -169,17 +169,29 @@ class BFF:
             total_length += segment_length
             lengths.append(total_length)
         
-        # Map to unit circle based on arc length
+        # Map to rectangle based on arc length
         boundary_uv = np.zeros((n_boundary, 2))
+        
         for i in range(n_boundary):
-            t = lengths[i] / total_length
-            angle = 2 * np.pi * t
-            boundary_uv[i] = [np.cos(angle), np.sin(angle)]
+            t = lengths[i] / total_length  # Position along boundary [0,1]
+            
+            if t < 0.25:
+                # Bottom edge: from (0,0) to (1,0)
+                boundary_uv[i] = [t * 4, 0]
+            elif t < 0.5:
+                # Right edge: from (1,0) to (1,1)
+                boundary_uv[i] = [1, (t - 0.25) * 4]
+            elif t < 0.75:
+                # Top edge: from (1,1) to (0,1)
+                boundary_uv[i] = [1 - (t - 0.5) * 4, 1]
+            else:
+                # Left edge: from (0,1) to (0,0)
+                boundary_uv[i] = [0, 1 - (t - 0.75) * 4]
         
         return boundary_uv
     
     def layout(self):
-        """Compute the conformal map layout"""
+        """Compute the conformal map layout with rectangular boundary"""
         try:
             # Find boundary
             boundary = self.find_boundary_loop()
@@ -188,8 +200,8 @@ class BFF:
             L = self.compute_cotangent_weights()
             
             if len(boundary) > 0:
-                # Compute boundary conditions
-                boundary_uv = self.parameterize_boundary(boundary)
+                # Compute boundary conditions - use RECTANGLE not circle
+                boundary_uv = self.parameterize_boundary_rectangle(boundary)
                 
                 # Mark interior vertices
                 n_vertices = len(self.vertices)
@@ -254,7 +266,7 @@ class BFF:
         return uv
 
 class SCP:
-    """Spectral Conformal Parameterization - produces smooth results"""
+    """Spectral Conformal Parameterization"""
     
     def __init__(self, vertices, faces):
         self.vertices = vertices
@@ -263,18 +275,15 @@ class SCP:
         self.uv_faces = None
         
     def layout(self):
-        """Simple planar projection that works well for many meshes"""
+        """Use BFF with rectangular boundary for SCP too"""
         try:
-            # Use the same approach as BFF but with different boundary handling
             bff = BFF(self.vertices, self.faces)
             bff.layout()
             
-            # For SCP, we'll use the BFF result but ensure it's smooth
             self.uv_vertices = bff.uv_vertices
             self.uv_faces = self.faces
             
         except:
-            # Fallback
             self.uv_vertices = BFF(self.vertices, self.faces).simple_planar_projection()
             self.uv_faces = self.faces
         
@@ -290,7 +299,7 @@ class AE:
         self.uv_faces = None
         
     def layout(self):
-        """Area-preserving mapping"""
+        """Area-preserving mapping with rectangular boundary"""
         try:
             # Start with conformal map
             bff = BFF(self.vertices, self.faces)
