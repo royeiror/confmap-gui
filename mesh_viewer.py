@@ -179,23 +179,23 @@ class UVLayoutViewer(QOpenGLWidget):
         self.update()
     
     def compute_conformal_distortion(self, vertices_3d, faces_3d, uv_vertices, uv_faces):
-        """Compute conformal distortion for each face using conformal energy"""
+        """Compute conformal distortion for each face using scale factors"""
         self.distortion = []
         
-        for i, face in enumerate(faces_3d):
-            if len(face) != 3:
-                self.distortion.append(0.0)  # Neutral for non-triangles
+        for i, face_3d in enumerate(faces_3d):
+            if len(face_3d) != 3:
+                self.distortion.append(0.0)
                 continue
                 
             try:
                 # Get 3D triangle vertices
-                v0_3d, v1_3d, v2_3d = vertices_3d[face[0]], vertices_3d[face[1]], vertices_3d[face[2]]
+                v0_3d, v1_3d, v2_3d = vertices_3d[face_3d[0]], vertices_3d[face_3d[1]], vertices_3d[face_3d[2]]
                 
                 # Get corresponding UV triangle vertices
                 if i < len(uv_faces):
                     uv_face = uv_faces[i]
                 else:
-                    uv_face = face
+                    uv_face = face_3d
                     
                 # Ensure we have valid UV indices
                 if (uv_face[0] >= len(uv_vertices) or uv_face[1] >= len(uv_vertices) or 
@@ -213,104 +213,117 @@ class UVLayoutViewer(QOpenGLWidget):
                 e1_uv = uv1 - uv0
                 e2_uv = uv2 - uv0
                 
-                # Compute the Jacobian matrix (2x2) for the mapping
-                # We approximate the Jacobian using the triangle's edges
-                # J = [du/dx, du/dy; dv/dx, dv/dy]
+                # Compute areas
+                area_3d = 0.5 * np.linalg.norm(np.cross(e1_3d, e2_3d))
+                area_uv = 0.5 * abs(e1_uv[0]*e2_uv[1] - e1_uv[1]*e2_uv[0])
                 
-                # Create matrices for solving J * [e1_3d, e2_3d] = [e1_uv, e2_uv]
-                A = np.column_stack([e1_3d[:2], e2_3d[:2]])  # Use first two coordinates
-                B = np.column_stack([e1_uv, e2_uv])
+                if area_3d < 1e-10 or area_uv < 1e-10:
+                    self.distortion.append(0.0)
+                    continue
                 
-                try:
-                    # Solve for Jacobian: J = B * A^(-1)
-                    J = B @ np.linalg.inv(A)
-                    
-                    # Compute the conformal energy: ||J^T J - (det J) I||^2
-                    # This measures deviation from conformality
-                    JtJ = J.T @ J
-                    detJ = np.linalg.det(J)
-                    identity = np.eye(2)
-                    
-                    # Conformal energy - higher values mean more distortion
-                    conformal_energy = np.linalg.norm(JtJ - detJ * identity) ** 2
-                    
-                    # Use log scale to make the values more manageable
-                    distortion_val = np.log(1.0 + conformal_energy)
-                    
-                except np.linalg.LinAlgError:
-                    # Fallback: use area ratio
-                    area_3d = 0.5 * np.linalg.norm(np.cross(e1_3d, e2_3d))
-                    area_uv = 0.5 * abs(e1_uv[0]*e2_uv[1] - e1_uv[1]*e2_uv[0])
-                    
-                    if area_3d > 1e-10 and area_uv > 1e-10:
-                        scale_ratio = max(area_uv / area_3d, area_3d / area_uv)
-                        distortion_val = np.log(scale_ratio)
-                    else:
-                        distortion_val = 0.0
+                # Compute edge lengths in 3D and UV
+                len_e1_3d = np.linalg.norm(e1_3d)
+                len_e2_3d = np.linalg.norm(e2_3d)
+                len_e1_uv = np.linalg.norm(e1_uv)
+                len_e2_uv = np.linalg.norm(e2_uv)
+                
+                # Compute scale factors for both edges
+                scale1 = len_e1_uv / len_e1_3d if len_e1_3d > 1e-10 else 1.0
+                scale2 = len_e2_uv / len_e2_3d if len_e2_3d > 1e-10 else 1.0
+                
+                # Compute area scale factor
+                area_scale = area_uv / area_3d
+                
+                # Conformal distortion: measure of how different the scales are
+                # Perfect conformal mapping would have uniform scaling
+                max_scale = max(scale1, scale2, area_scale)
+                min_scale = min(scale1, scale2, area_scale)
+                
+                if min_scale > 1e-10:
+                    scale_ratio = max_scale / min_scale
+                    # Log scale to make it more manageable, offset by 1 to avoid log(1) = 0
+                    distortion_val = np.log(scale_ratio)
+                else:
+                    distortion_val = 0.0
                 
                 self.distortion.append(distortion_val)
                 
             except Exception as e:
-                # If anything fails, use neutral distortion
+                print(f"Error computing distortion for face {i}: {e}")
                 self.distortion.append(0.0)
         
-        # Auto-adjust distortion range to ensure we use the full color spectrum
+        # Auto-adjust distortion range to ensure good color variation
         if self.distortion:
             distortions = np.array(self.distortion)
+            valid_distortions = distortions[np.isfinite(distortions)]
             
-            # Remove extreme outliers using percentiles
-            q5 = np.percentile(distortions, 5)
-            q95 = np.percentile(distortions, 95)
-            
-            # Set range to cover most of the data, but ensure we have some range
-            if q95 > q5:
-                # Add some padding to ensure we see the full gradient
-                padding = (q95 - q5) * 0.1
-                self.distortion_range = (q5 - padding, q95 + padding)
-            else:
-                # If all values are similar, use a reasonable default range
-                if np.max(distortions) > 0:
-                    self.distortion_range = (0.0, np.max(distortions) * 1.5)
+            if len(valid_distortions) > 0:
+                # Use percentiles to remove outliers
+                q10 = np.percentile(valid_distortions, 10)
+                q90 = np.percentile(valid_distortions, 90)
+                
+                if q90 > q10:
+                    # Add some padding
+                    padding = (q90 - q10) * 0.2
+                    self.distortion_range = (max(0, q10 - padding), q90 + padding)
                 else:
-                    self.distortion_range = (0.0, 1.0)
+                    # If all values are similar, use min/max with padding
+                    min_val = np.min(valid_distortions)
+                    max_val = np.max(valid_distortions)
+                    if max_val > min_val:
+                        padding = (max_val - min_val) * 0.2
+                        self.distortion_range = (min_val - padding, max_val + padding)
+                    else:
+                        self.distortion_range = (0.0, 1.0)
+            else:
+                self.distortion_range = (0.0, 1.0)
+            
+            print(f"Distortion range: {self.distortion_range}")
+            print(f"Distortion stats - Min: {np.min(valid_distortions) if len(valid_distortions) > 0 else 'N/A'}, "
+                  f"Max: {np.max(valid_distortions) if len(valid_distortions) > 0 else 'N/A'}, "
+                  f"Mean: {np.mean(valid_distortions) if len(valid_distortions) > 0 else 'N/A'}")
     
     def get_heatmap_color(self, distortion_value):
-        """Convert distortion value to full blue-to-red heatmap color"""
-        # Normalize to current range
+        """Convert distortion value to heatmap color with better distribution"""
         min_val, max_val = self.distortion_range
         
-        # If range is too small, expand it to ensure we see colors
+        # If range is too small, use a fixed range to ensure colors
         if max_val - min_val < 1e-10:
-            normalized = 0.5  # Middle of the range
+            normalized = 0.5
         else:
             normalized = (distortion_value - min_val) / (max_val - min_val)
         
-        # Clamp to [0, 1] and ensure we use the full spectrum
+        # Clamp to [0, 1]
         normalized = max(0.0, min(1.0, normalized))
         
-        # Full blue-to-red heatmap with smooth transitions
-        # Blue (0.0) -> Cyan -> Green -> Yellow -> Red (1.0)
-        if normalized < 0.25:
-            # Blue to Cyan
-            t = normalized / 0.25
+        # Enhanced heatmap with more visible color transitions
+        if normalized < 0.2:
+            # Deep blue to blue
+            t = normalized / 0.2
+            r = 0.0
+            g = 0.0
+            b = 0.5 + 0.5 * t
+        elif normalized < 0.4:
+            # Blue to cyan
+            t = (normalized - 0.2) / 0.2
             r = 0.0
             g = t
             b = 1.0
-        elif normalized < 0.5:
-            # Cyan to Green
-            t = (normalized - 0.25) / 0.25
+        elif normalized < 0.6:
+            # Cyan to green
+            t = (normalized - 0.4) / 0.2
             r = 0.0
             g = 1.0
             b = 1.0 - t
-        elif normalized < 0.75:
-            # Green to Yellow
-            t = (normalized - 0.5) / 0.25
+        elif normalized < 0.8:
+            # Green to yellow
+            t = (normalized - 0.6) / 0.2
             r = t
             g = 1.0
             b = 0.0
         else:
-            # Yellow to Red
-            t = (normalized - 0.75) / 0.25
+            # Yellow to red
+            t = (normalized - 0.8) / 0.2
             r = 1.0
             g = 1.0 - t
             b = 0.0
