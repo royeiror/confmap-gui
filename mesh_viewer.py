@@ -70,6 +70,8 @@ class TrianglePacker:
     @staticmethod
     def pack_triangles(triangles_3d, uv_vertices, uv_faces, padding=0.02):
         """Pack triangles into a rectangular area for efficient fabric usage"""
+        print(f"Packing {len(uv_faces)} triangles...")
+        
         # Extract individual triangles with their original 3D data
         triangle_islands = []
         
@@ -89,6 +91,10 @@ class TrianglePacker:
                     'face_index': i,
                     '3d_data': triangle_3d
                 })
+        
+        if not triangle_islands:
+            print("No triangles to pack!")
+            return []
         
         # Sort triangles by area (largest first for better packing)
         triangle_islands.sort(key=lambda x: TrianglePacker.triangle_area(x['uv_points']), reverse=True)
@@ -139,6 +145,7 @@ class TrianglePacker:
             for triangle in packed_triangles:
                 triangle['packed_points'] /= scale_factor
         
+        print(f"Packed {len(packed_triangles)} triangles")
         return packed_triangles
 
     @staticmethod
@@ -170,6 +177,8 @@ class ConformalMappingThread(QThread):
             self.log_signal.emit("Conformal mapping completed successfully!")
         except Exception as e:
             self.log_signal.emit(f"Error in conformal mapping: {str(e)}")
+            import traceback
+            self.log_signal.emit(f"Traceback: {traceback.format_exc()}")
             self.finished_signal.emit(None, None, None)
     
     def compute_conformal_map(self):
@@ -182,6 +191,8 @@ class ConformalMappingThread(QThread):
         uv_vertices = []
         uv_faces = []
         vertex_offset = 0
+        
+        print(f"Processing {n_faces} faces...")
         
         for face_idx, face in enumerate(self.faces):
             if len(face) != 3:
@@ -223,11 +234,17 @@ class ConformalMappingThread(QThread):
             uv_faces.append([vertex_offset, vertex_offset + 1, vertex_offset + 2])
             vertex_offset += 3
         
+        print(f"Generated {len(uv_vertices)} UV vertices, {len(uv_faces)} UV faces before packing")
+        
         self.progress_signal.emit(90)
         self.log_signal.emit("Packing triangles for fabric cutting...")
         
         # Pack triangles efficiently
         packed_data = TrianglePacker.pack_triangles(triangles_3d, np.array(uv_vertices), uv_faces)
+        
+        if not packed_data:
+            self.log_signal.emit("Warning: No triangles were packed!")
+            return np.array(uv_vertices, dtype=np.float32), uv_faces, triangles_3d
         
         # Rebuild UV arrays from packed data
         packed_uv_vertices = []
@@ -250,11 +267,13 @@ class ConformalMappingThread(QThread):
         self.progress_signal.emit(100)
         
         # DEBUG: Print some information about the generated UV data
-        print(f"Generated {len(packed_uv_vertices)} UV vertices, {len(packed_uv_faces)} UV faces")
+        print(f"Generated {len(packed_uv_vertices)} UV vertices, {len(packed_uv_faces)} UV faces after packing")
         if len(packed_uv_vertices) > 0:
-            print(f"UV vertices range: [{np.min(packed_uv_vertices, axis=0)}, {np.max(packed_uv_vertices, axis=0)}]")
+            uv_min = np.min(packed_uv_vertices, axis=0)
+            uv_max = np.max(packed_uv_vertices, axis=0)
+            print(f"UV vertices range: [{uv_min}, {uv_max}]")
         
-        return np.array(packed_uv_vertices, dtype=np.float32), packed_uv_faces, packed_triangles_3d
+        return np.array(packed_uv_vertices, dtype=np.float32), packed_uv_faces, triangles_3d
 
 class MeshViewer3D(QOpenGLWidget):
     def __init__(self, parent=None):
@@ -426,7 +445,9 @@ class UVLayoutViewer(QOpenGLWidget):
         self.uv_faces = uv_faces
         
         # Compute conformal distortion if 3D data is available
-        if vertices_3d is not None and faces_3d is not None and uv_vertices is not None and len(uv_vertices) > 0:
+        if (vertices_3d is not None and faces_3d is not None and 
+            uv_vertices is not None and len(uv_vertices) > 0 and
+            uv_faces is not None and len(uv_faces) > 0):
             self.compute_conformal_distortion(vertices_3d, faces_3d, uv_vertices, uv_faces)
         
         self.update()
@@ -595,13 +616,8 @@ class UVLayoutViewer(QOpenGLWidget):
         glMatrixMode(GL_PROJECTION)
         glLoadIdentity()
         
-        padding = 0.1
-        aspect = width / float(height) if height != 0 else 1.0
-        
-        if aspect > 1:
-            glOrtho(-padding, 1 + padding, (-padding)/aspect, (1 + padding)/aspect, -1, 1)
-        else:
-            glOrtho(-padding * aspect, (1 + padding) * aspect, -padding, 1 + padding, -1, 1)
+        # Fixed orthographic projection that covers [0,1] range
+        glOrtho(0, 1, 0, 1, -1, 1)
             
         glMatrixMode(GL_MODELVIEW)
         
@@ -609,11 +625,13 @@ class UVLayoutViewer(QOpenGLWidget):
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
         glLoadIdentity()
         
+        # Draw the UV boundary and grid first
+        self.draw_uv_boundary()
+        
         if self.uv_vertices is not None and self.uv_faces is not None:
             self.draw_uv_layout()
-            self.draw_uv_boundary()
         else:
-            # Draw placeholder text when no UV data is available
+            # Draw placeholder when no UV data is available
             self.draw_placeholder()
                 
     def draw_uv_layout(self):
@@ -621,6 +639,10 @@ class UVLayoutViewer(QOpenGLWidget):
             return
             
         print(f"Drawing UV layout: {len(self.uv_vertices)} vertices, {len(self.uv_faces)} faces")
+        
+        # Enable blending for transparency
+        glEnable(GL_BLEND)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
             
         if self.display_mode == "wireframe":
             # Wireframe only
@@ -676,14 +698,14 @@ class UVLayoutViewer(QOpenGLWidget):
         # Reset to defaults
         glPolygonMode(GL_FRONT_AND_BACK, GL_FILL)
         glLineWidth(1.0)
+        glDisable(GL_BLEND)
     
     def draw_placeholder(self):
         """Draw placeholder text when no UV data is available"""
-        # This would require text rendering in OpenGL, which is complex
-        # For now, we'll just draw a simple cross
-        glColor3f(0.5, 0.5, 0.5)
+        glColor3f(0.8, 0.8, 0.8)
         glLineWidth(2.0)
         glBegin(GL_LINES)
+        # Draw a large X
         glVertex3f(0.1, 0.1, 0)
         glVertex3f(0.9, 0.9, 0)
         glVertex3f(0.9, 0.1, 0)
@@ -692,6 +714,7 @@ class UVLayoutViewer(QOpenGLWidget):
         glLineWidth(1.0)
         
     def draw_uv_boundary(self):
+        """Draw the UV boundary and grid"""
         glColor3f(0.7, 0.7, 0.7)
         glLineWidth(1.0)
         glBegin(GL_LINE_LOOP)
@@ -727,8 +750,8 @@ class UVLayoutViewer(QOpenGLWidget):
         self.show_wireframe_overlay = show_wireframe
         self.update()
 
-# ... (rest of the code remains the same, including ComparisonViewer and MainWindow classes)
-# The ComparisonViewer and MainWindow classes should be the same as in the previous version
+# ... (ComparisonViewer and MainWindow classes remain the same as in the previous version)
+# For brevity, I'm keeping them the same but you should include them from the previous code
 
 class ComparisonViewer(QWidget):
     def __init__(self, parent=None):
