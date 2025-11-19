@@ -176,23 +176,14 @@ class ConformalMappingThread(QThread):
             v0, v1, v2 = self.vertices[face[0]], self.vertices[face[1]], self.vertices[face[2]]
             triangles_3d.append((v0, v1, v2))
             
-            # Simple planar parameterization
-            edge1 = v1 - v0
-            edge2 = v2 - v0
-            
-            normal = np.cross(edge1, edge2)
-            if np.linalg.norm(normal) < 1e-10:
-                uv_triangle = np.array([[0, 0], [1, 0], [0, 1]], dtype=np.float32)
+            # Create a simple test triangle that should definitely be visible
+            # This creates a triangle in the center of UV space
+            if face_idx % 3 == 0:
+                uv_triangle = np.array([[0.3, 0.3], [0.7, 0.3], [0.5, 0.7]], dtype=np.float32)
+            elif face_idx % 3 == 1:
+                uv_triangle = np.array([[0.1, 0.1], [0.4, 0.1], [0.1, 0.4]], dtype=np.float32)
             else:
-                normal = normal / np.linalg.norm(normal)
-                u_axis = edge1 / np.linalg.norm(edge1)
-                v_axis = np.cross(normal, u_axis)
-                v_axis = v_axis / np.linalg.norm(v_axis)
-                
-                uv0 = np.array([0, 0])
-                uv1 = np.array([np.linalg.norm(edge1), 0])
-                uv2 = np.array([np.dot(edge2, u_axis), np.dot(edge2, v_axis)])
-                uv_triangle = np.array([uv0, uv1, uv2])
+                uv_triangle = np.array([[0.6, 0.6], [0.9, 0.6], [0.6, 0.9]], dtype=np.float32)
             
             uv_vertices.extend(uv_triangle)
             uv_faces.append([vertex_offset, vertex_offset + 1, vertex_offset + 2])
@@ -321,21 +312,21 @@ class UVLayoutViewer(QOpenGLWidget):
     def initializeGL(self):
         glDisable(GL_LIGHTING)
         glDisable(GL_DEPTH_TEST)
-        glClearColor(1.0, 1.0, 1.0, 1.0)
+        glClearColor(1.0, 1.0, 1.0, 1.0)  # White background
         
     def resizeGL(self, width, height):
         glViewport(0, 0, width, height)
         glMatrixMode(GL_PROJECTION)
         glLoadIdentity()
-        # Use orthographic projection that matches UV [0,1] space
-        glOrtho(-0.1, 1.1, -0.1, 1.1, -1, 1)
+        # Fixed orthographic projection that definitely covers [0,1] range
+        glOrtho(0.0, 1.0, 0.0, 1.0, -1.0, 1.0)
         glMatrixMode(GL_MODELVIEW)
         
     def paintGL(self):
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
         glLoadIdentity()
         
-        # Draw boundary and grid first
+        # Draw the boundary and grid first
         self.draw_uv_boundary()
         
         # Draw UV layout if available
@@ -347,8 +338,12 @@ class UVLayoutViewer(QOpenGLWidget):
     def draw_uv_layout(self):
         print(f"Drawing UV layout: {len(self.uv_vertices)} vertices, {len(self.uv_faces)} faces")
         
-        # Draw filled triangles
-        glColor3f(0.7, 0.8, 1.0)  # Light blue
+        if len(self.uv_vertices) == 0 or len(self.uv_faces) == 0:
+            print("No vertices or faces to draw!")
+            return
+            
+        # Draw filled triangles in bright colors to ensure visibility
+        glColor3f(1.0, 0.0, 0.0)  # RED filled triangles
         glBegin(GL_TRIANGLES)
         for face in self.uv_faces:
             if len(face) == 3:
@@ -358,9 +353,9 @@ class UVLayoutViewer(QOpenGLWidget):
                         glVertex2f(uv[0], uv[1])
         glEnd()
         
-        # Draw wireframe
-        glColor3f(0.2, 0.2, 0.8)  # Dark blue
-        glLineWidth(2.0)
+        # Draw wireframe in black
+        glColor3f(0.0, 0.0, 0.0)  # BLACK wireframe
+        glLineWidth(3.0)  # Thick lines for visibility
         glBegin(GL_LINES)
         for face in self.uv_faces:
             if len(face) == 3:
@@ -376,33 +371,32 @@ class UVLayoutViewer(QOpenGLWidget):
         glLineWidth(1.0)
         
     def draw_uv_boundary(self):
-        # Draw UV space boundary
-        glColor3f(0.5, 0.5, 0.5)
-        glLineWidth(1.0)
+        # Draw UV space boundary in blue
+        glColor3f(0.0, 0.0, 1.0)  # BLUE boundary
+        glLineWidth(2.0)
         glBegin(GL_LINE_LOOP)
-        glVertex2f(0, 0)
-        glVertex2f(1, 0)
-        glVertex2f(1, 1)
-        glVertex2f(0, 1)
+        glVertex2f(0.0, 0.0)
+        glVertex2f(1.0, 0.0)
+        glVertex2f(1.0, 1.0)
+        glVertex2f(0.0, 1.0)
         glEnd()
         
-        # Draw grid
-        glColor3f(0.8, 0.8, 0.8)
-        glLineWidth(0.5)
+        # Draw grid in light gray
+        glColor3f(0.7, 0.7, 0.7)
+        glLineWidth(1.0)
         glBegin(GL_LINES)
         for i in range(1, 4):
             x = i * 0.25
-            glVertex2f(x, 0)
-            glVertex2f(x, 1)
-            glVertex2f(0, x)
-            glVertex2f(1, x)
+            glVertex2f(x, 0.0)
+            glVertex2f(x, 1.0)
+            glVertex2f(0.0, x)
+            glVertex2f(1.0, x)
         glEnd()
-        glLineWidth(1.0)
         
     def draw_placeholder(self):
-        # Draw placeholder when no UV data
-        glColor3f(0.8, 0.8, 0.8)
-        glLineWidth(2.0)
+        # Draw a large red X when no UV data
+        glColor3f(1.0, 0.0, 0.0)  # RED
+        glLineWidth(4.0)
         glBegin(GL_LINES)
         glVertex2f(0.1, 0.1)
         glVertex2f(0.9, 0.9)
@@ -422,6 +416,7 @@ class ComparisonViewer(QWidget):
         
     def init_ui(self):
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
         
         # Splitter for side-by-side view
         splitter = QSplitter(Qt.Horizontal)
@@ -429,8 +424,10 @@ class ComparisonViewer(QWidget):
         # Left side - 3D mesh
         left_widget = QWidget()
         left_layout = QVBoxLayout(left_widget)
-        left_label = QLabel("3D Mesh Viewer")
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_label = QLabel("3D Mesh • Drag to rotate • Wheel to zoom")
         left_label.setAlignment(Qt.AlignCenter)
+        left_label.setStyleSheet("background-color: #f0f0f0; padding: 5px;")
         left_layout.addWidget(left_label)
         
         self.mesh_viewer = MeshViewer3D()
@@ -440,21 +437,23 @@ class ComparisonViewer(QWidget):
         # Right side - UV layout
         right_widget = QWidget()
         right_layout = QVBoxLayout(right_widget)
-        right_label = QLabel("UV Layout Viewer")
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_label = QLabel("UV Layout • Should show RED triangles")
         right_label.setAlignment(Qt.AlignCenter)
+        right_label.setStyleSheet("background-color: #f0f0f0; padding: 5px;")
         right_layout.addWidget(right_label)
         
         self.uv_viewer = UVLayoutViewer()
         right_layout.addWidget(self.uv_viewer)
         splitter.addWidget(right_widget)
         
-        splitter.setSizes([500, 500])
+        splitter.setSizes([400, 400])
         layout.addWidget(splitter)
 
 class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("UV Conformal Map Tool")
+        self.setWindowTitle("UV Conformal Map Tool - DEBUG VERSION")
         self.setGeometry(100, 100, 1200, 800)
         
         self.vertices = None
@@ -467,6 +466,7 @@ class MainWindow(QWidget):
         
     def init_ui(self):
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(5, 5, 5, 5)
         
         # Create tabs
         tabs = QTabWidget()
@@ -475,6 +475,7 @@ class MainWindow(QWidget):
         # Main visualization tab
         vis_tab = QWidget()
         vis_layout = QVBoxLayout(vis_tab)
+        vis_layout.setContentsMargins(5, 5, 5, 5)
         
         # File loading section
         file_group = QGroupBox("File Operations")
