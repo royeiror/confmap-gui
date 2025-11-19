@@ -57,11 +57,84 @@ class SimpleObjLoader:
         except Exception as e:
             raise ValueError(f"Error parsing OBJ file: {str(e)}")
 
-class UVMappingThread(QThread):
-    """Thread for computing UV mapping"""
+class TrianglePacker:
+    """Packs triangles efficiently for fabric cutting patterns"""
+    
+    @staticmethod
+    def pack_triangles(uv_vertices, uv_faces, padding=0.02):
+        """Pack triangles into a rectangular area"""
+        print(f"Packing {len(uv_faces)} triangles...")
+        
+        triangle_islands = []
+        
+        for i, face in enumerate(uv_faces):
+            if len(face) == 3:
+                uv_triangle = [uv_vertices[face[0]], uv_vertices[face[1]], uv_vertices[face[2]]]
+                triangle_islands.append({
+                    'uv_points': np.array(uv_triangle),
+                    'face_index': i
+                })
+        
+        if not triangle_islands:
+            return []
+        
+        # Sort by area
+        triangle_islands.sort(key=lambda x: TrianglePacker.triangle_area(x['uv_points']), reverse=True)
+        
+        packed_triangles = []
+        current_x = 0.0
+        current_y = 0.0
+        row_height = 0.0
+        max_width = 0.0
+        
+        for triangle in triangle_islands:
+            points = triangle['uv_points']
+            min_x, min_y = np.min(points, axis=0)
+            max_x, max_y = np.max(points, axis=0)
+            width = max_x - min_x
+            height = max_y - min_y
+            
+            if current_x + width + padding > 1.0:
+                current_x = 0.0
+                current_y += row_height + padding
+                row_height = 0.0
+            
+            offset_x = current_x - min_x
+            offset_y = current_y - min_y
+            
+            row_height = max(row_height, height)
+            max_width = max(max_width, current_x + width)
+            
+            packed_points = points + np.array([offset_x, offset_y])
+            packed_triangles.append({
+                'original_face_index': triangle['face_index'],
+                'packed_points': packed_points
+            })
+            
+            current_x += width + padding
+        
+        # Normalize to [0,1] range
+        scale_factor = max(max_width, current_y + row_height)
+        if scale_factor > 0:
+            for triangle in packed_triangles:
+                triangle['packed_points'] /= scale_factor
+        
+        print(f"Packed {len(packed_triangles)} triangles")
+        return packed_triangles
+
+    @staticmethod
+    def triangle_area(points):
+        """Calculate area of a triangle"""
+        if len(points) != 3:
+            return 0.0
+        a, b, c = points[0], points[1], points[2]
+        return 0.5 * abs((b[0]-a[0])*(c[1]-a[1]) - (c[0]-a[0])*(b[1]-a[1]))
+
+class ConformalMappingThread(QThread):
+    """Thread for computing conformal mapping"""
     progress_signal = pyqtSignal(int)
     log_signal = pyqtSignal(str)
-    finished_signal = pyqtSignal(object, object)  # uv_vertices, uv_faces
+    finished_signal = pyqtSignal(object, object, object)  # uv_vertices, uv_faces, triangles_3d
     
     def __init__(self, vertices, faces):
         super().__init__()
@@ -70,22 +143,23 @@ class UVMappingThread(QThread):
         
     def run(self):
         try:
-            self.log_signal.emit("Starting UV mapping...")
-            uv_vertices, uv_faces = self.compute_simple_uv_map()
-            self.finished_signal.emit(uv_vertices, uv_faces)
-            self.log_signal.emit("UV mapping completed successfully!")
+            self.log_signal.emit("Starting conformal mapping...")
+            uv_vertices, uv_faces, triangles_3d = self.compute_conformal_map()
+            self.finished_signal.emit(uv_vertices, uv_faces, triangles_3d)
+            self.log_signal.emit("Conformal mapping completed successfully!")
         except Exception as e:
-            self.log_signal.emit(f"Error in UV mapping: {str(e)}")
-            self.finished_signal.emit(None, None)
+            self.log_signal.emit(f"Error in conformal mapping: {str(e)}")
+            self.finished_signal.emit(None, None, None)
     
-    def compute_simple_uv_map(self):
-        """Compute a simple planar UV mapping"""
+    def compute_conformal_map(self):
+        """Compute per-face conformal mapping"""
         self.progress_signal.emit(10)
         
         if self.vertices is None or self.faces is None:
-            return None, None
+            return None, None, None
         
         n_faces = len(self.faces)
+        triangles_3d = []
         uv_vertices = []
         uv_faces = []
         vertex_offset = 0
@@ -98,42 +172,62 @@ class UVMappingThread(QThread):
                 
             self.progress_signal.emit(10 + int(80 * face_idx / n_faces))
             
-            # Get 3D triangle vertices
+            # Get 3D triangle
             v0, v1, v2 = self.vertices[face[0]], self.vertices[face[1]], self.vertices[face[2]]
+            triangles_3d.append((v0, v1, v2))
             
-            # Simple planar projection - just use XZ coordinates normalized to [0,1]
-            # This creates a basic UV mapping for testing
-            points_3d = np.array([v0, v1, v2])
+            # Simple planar parameterization
+            edge1 = v1 - v0
+            edge2 = v2 - v0
             
-            # Get bounding box in XZ plane
-            min_coords = np.min(points_3d[:, [0, 2]], axis=0)
-            max_coords = np.max(points_3d[:, [0, 2]], axis=0)
-            
-            # Normalize to [0,1] range
-            if np.any(max_coords - min_coords > 1e-10):
-                normalized_points = (points_3d[:, [0, 2]] - min_coords) / (max_coords - min_coords)
+            normal = np.cross(edge1, edge2)
+            if np.linalg.norm(normal) < 1e-10:
+                uv_triangle = np.array([[0, 0], [1, 0], [0, 1]], dtype=np.float32)
             else:
-                normalized_points = np.array([[0, 0], [1, 0], [0, 1]], dtype=np.float32)
+                normal = normal / np.linalg.norm(normal)
+                u_axis = edge1 / np.linalg.norm(edge1)
+                v_axis = np.cross(normal, u_axis)
+                v_axis = v_axis / np.linalg.norm(v_axis)
+                
+                uv0 = np.array([0, 0])
+                uv1 = np.array([np.linalg.norm(edge1), 0])
+                uv2 = np.array([np.dot(edge2, u_axis), np.dot(edge2, v_axis)])
+                uv_triangle = np.array([uv0, uv1, uv2])
             
-            # Add some offset to separate triangles
-            group_offset = (face_idx % 10) * 0.1
-            normalized_points += group_offset
-            
-            # Ensure we stay in [0,1] range
-            normalized_points = np.clip(normalized_points, 0, 1)
-            
-            # Add to UV arrays
-            uv_vertices.extend(normalized_points)
+            uv_vertices.extend(uv_triangle)
             uv_faces.append([vertex_offset, vertex_offset + 1, vertex_offset + 2])
             vertex_offset += 3
         
+        print(f"Generated {len(uv_vertices)} UV vertices before packing")
+        
+        self.progress_signal.emit(90)
+        self.log_signal.emit("Packing triangles...")
+        
+        # Pack triangles
+        uv_vertices_array = np.array(uv_vertices, dtype=np.float32)
+        packed_data = TrianglePacker.pack_triangles(uv_vertices_array, uv_faces)
+        
+        if not packed_data:
+            return uv_vertices_array, uv_faces, triangles_3d
+        
+        # Rebuild from packed data
+        packed_uv_vertices = []
+        packed_uv_faces = []
+        
+        new_vertex_offset = 0
+        for packed_triangle in packed_data:
+            points = packed_triangle['packed_points']
+            packed_uv_vertices.extend(points)
+            packed_uv_faces.append([new_vertex_offset, new_vertex_offset + 1, new_vertex_offset + 2])
+            new_vertex_offset += 3
+        
         self.progress_signal.emit(100)
         
-        uv_vertices_array = np.array(uv_vertices, dtype=np.float32)
-        print(f"Generated {len(uv_vertices_array)} UV vertices, {len(uv_faces)} UV faces")
-        print(f"UV range: [{np.min(uv_vertices_array, axis=0)}, {np.max(uv_vertices_array, axis=0)}]")
+        packed_uv_vertices_array = np.array(packed_uv_vertices, dtype=np.float32)
+        print(f"Final: {len(packed_uv_vertices_array)} UV vertices, {len(packed_uv_faces)} UV faces")
+        print(f"UV range: [{np.min(packed_uv_vertices_array, axis=0)}, {np.max(packed_uv_vertices_array, axis=0)}]")
         
-        return uv_vertices_array, uv_faces
+        return packed_uv_vertices_array, packed_uv_faces, triangles_3d
 
 class MeshViewer3D(QOpenGLWidget):
     def __init__(self, parent=None):
@@ -150,8 +244,7 @@ class MeshViewer3D(QOpenGLWidget):
         self.faces = faces
         if vertices is not None and len(vertices) > 0:
             self.mesh_center = np.mean(vertices, axis=0)
-            distances = np.linalg.norm(vertices - self.mesh_center, axis=1)
-            self.mesh_radius = np.max(distances) if len(distances) > 0 else 1.0
+            self.mesh_radius = np.max(np.linalg.norm(vertices - self.mesh_center, axis=1))
             self.zoom = -self.mesh_radius * 3.0
         self.update()
         
@@ -234,7 +327,7 @@ class UVLayoutViewer(QOpenGLWidget):
         glViewport(0, 0, width, height)
         glMatrixMode(GL_PROJECTION)
         glLoadIdentity()
-        # Simple orthographic projection for 2D UV space
+        # Use orthographic projection that matches UV [0,1] space
         glOrtho(-0.1, 1.1, -0.1, 1.1, -1, 1)
         glMatrixMode(GL_MODELVIEW)
         
@@ -242,7 +335,7 @@ class UVLayoutViewer(QOpenGLWidget):
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
         glLoadIdentity()
         
-        # Always draw the boundary
+        # Draw boundary and grid first
         self.draw_uv_boundary()
         
         # Draw UV layout if available
@@ -254,8 +347,8 @@ class UVLayoutViewer(QOpenGLWidget):
     def draw_uv_layout(self):
         print(f"Drawing UV layout: {len(self.uv_vertices)} vertices, {len(self.uv_faces)} faces")
         
-        # Draw filled triangles in light blue
-        glColor3f(0.7, 0.8, 1.0)
+        # Draw filled triangles
+        glColor3f(0.7, 0.8, 1.0)  # Light blue
         glBegin(GL_TRIANGLES)
         for face in self.uv_faces:
             if len(face) == 3:
@@ -265,13 +358,12 @@ class UVLayoutViewer(QOpenGLWidget):
                         glVertex2f(uv[0], uv[1])
         glEnd()
         
-        # Draw wireframe in dark blue
-        glColor3f(0.2, 0.2, 0.8)
+        # Draw wireframe
+        glColor3f(0.2, 0.2, 0.8)  # Dark blue
         glLineWidth(2.0)
         glBegin(GL_LINES)
         for face in self.uv_faces:
             if len(face) == 3:
-                # Draw three edges for each triangle
                 for i in range(3):
                     v1 = face[i]
                     v2 = face[(i + 1) % 3]
@@ -308,7 +400,7 @@ class UVLayoutViewer(QOpenGLWidget):
         glLineWidth(1.0)
         
     def draw_placeholder(self):
-        # Draw a placeholder when no UV data is available
+        # Draw placeholder when no UV data
         glColor3f(0.8, 0.8, 0.8)
         glLineWidth(2.0)
         glBegin(GL_LINES)
@@ -319,10 +411,50 @@ class UVLayoutViewer(QOpenGLWidget):
         glEnd()
         glLineWidth(1.0)
 
+class ComparisonViewer(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.vertices_3d = None
+        self.faces_3d = None
+        self.uv_vertices = None
+        self.uv_faces = None
+        self.init_ui()
+        
+    def init_ui(self):
+        layout = QVBoxLayout(self)
+        
+        # Splitter for side-by-side view
+        splitter = QSplitter(Qt.Horizontal)
+        
+        # Left side - 3D mesh
+        left_widget = QWidget()
+        left_layout = QVBoxLayout(left_widget)
+        left_label = QLabel("3D Mesh Viewer")
+        left_label.setAlignment(Qt.AlignCenter)
+        left_layout.addWidget(left_label)
+        
+        self.mesh_viewer = MeshViewer3D()
+        left_layout.addWidget(self.mesh_viewer)
+        splitter.addWidget(left_widget)
+        
+        # Right side - UV layout
+        right_widget = QWidget()
+        right_layout = QVBoxLayout(right_widget)
+        right_label = QLabel("UV Layout Viewer")
+        right_label.setAlignment(Qt.AlignCenter)
+        right_layout.addWidget(right_label)
+        
+        self.uv_viewer = UVLayoutViewer()
+        right_layout.addWidget(self.uv_viewer)
+        splitter.addWidget(right_widget)
+        
+        splitter.setSizes([500, 500])
+        layout.addWidget(splitter)
+
 class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("UV Map Tool - Simple Test")
+        self.setWindowTitle("UV Conformal Map Tool")
         self.setGeometry(100, 100, 1200, 800)
         
         self.vertices = None
@@ -336,64 +468,56 @@ class MainWindow(QWidget):
     def init_ui(self):
         layout = QVBoxLayout(self)
         
-        # Create main splitter
-        splitter = QSplitter(Qt.Horizontal)
+        # Create tabs
+        tabs = QTabWidget()
+        layout.addWidget(tabs)
         
-        # Left side - 3D viewer
-        left_widget = QWidget()
-        left_layout = QVBoxLayout(left_widget)
-        left_label = QLabel("3D Mesh Viewer")
-        left_label.setAlignment(Qt.AlignCenter)
-        left_layout.addWidget(left_label)
+        # Main visualization tab
+        vis_tab = QWidget()
+        vis_layout = QVBoxLayout(vis_tab)
         
-        self.mesh_viewer = MeshViewer3D()
-        left_layout.addWidget(self.mesh_viewer)
-        splitter.addWidget(left_widget)
+        # File loading section
+        file_group = QGroupBox("File Operations")
+        file_layout = QHBoxLayout(file_group)
         
-        # Right side - UV viewer
-        right_widget = QWidget()
-        right_layout = QVBoxLayout(right_widget)
-        right_label = QLabel("UV Layout Viewer")
-        right_label.setAlignment(Qt.AlignCenter)
-        right_layout.addWidget(right_label)
-        
-        self.uv_viewer = UVLayoutViewer()
-        right_layout.addWidget(self.uv_viewer)
-        splitter.addWidget(right_widget)
-        
-        splitter.setSizes([600, 600])
-        layout.addWidget(splitter)
-        
-        # Controls
-        controls_layout = QHBoxLayout()
-        
-        self.load_btn = QPushButton("Load OBJ File")
+        self.load_btn = QPushButton("Load 3D Model (OBJ)")
         self.load_btn.clicked.connect(self.load_model)
-        controls_layout.addWidget(self.load_btn)
+        file_layout.addWidget(self.load_btn)
         
-        self.process_btn = QPushButton("Generate UV Map")
+        self.process_btn = QPushButton("Compute UV Map")
         self.process_btn.clicked.connect(self.compute_uv_map)
         self.process_btn.setEnabled(False)
-        controls_layout.addWidget(self.process_btn)
+        file_layout.addWidget(self.process_btn)
         
-        controls_layout.addStretch()
+        file_layout.addStretch()
         
         self.file_label = QLabel("No file loaded")
-        controls_layout.addWidget(self.file_label)
+        file_layout.addWidget(self.file_label)
         
-        layout.addLayout(controls_layout)
+        vis_layout.addWidget(file_group)
         
         # Progress bar
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
-        layout.addWidget(self.progress_bar)
+        vis_layout.addWidget(self.progress_bar)
         
-        # Log
+        # Add comparison viewer
+        self.comparison_viewer = ComparisonViewer()
+        vis_layout.addWidget(self.comparison_viewer)
+        
+        tabs.addTab(vis_tab, "Visualization")
+        
+        # Log tab
+        log_tab = QWidget()
+        log_layout = QVBoxLayout(log_tab)
+        
         self.log_text = QTextEdit()
-        self.log_text.setMaximumHeight(100)
         self.log_text.setReadOnly(True)
-        layout.addWidget(QLabel("Log:"))
-        layout.addWidget(self.log_text)
+        self.log_text.setMaximumHeight(200)
+        log_layout.addWidget(QLabel("Processing Log:"))
+        log_layout.addWidget(self.log_text)
+        
+        tabs.addTab(log_tab, "Log")
         
         self.log("Application started. Load an OBJ file to begin.")
         
@@ -415,11 +539,13 @@ class MainWindow(QWidget):
             self.log(f"Loaded: {len(self.vertices)} vertices, {len(self.faces)} faces")
             self.file_label.setText(f"Loaded: {os.path.basename(filename)}")
             
-            self.mesh_viewer.set_mesh(self.vertices, self.faces)
+            self.comparison_viewer.mesh_viewer.set_mesh(self.vertices, self.faces)
             self.process_btn.setEnabled(True)
             
             # Clear previous UV data
-            self.uv_viewer.set_uv_layout(None, None)
+            self.uv_vertices = None
+            self.uv_faces = None
+            self.comparison_viewer.uv_viewer.set_uv_layout(None, None)
             
         except Exception as e:
             self.log(f"Error: {str(e)}")
@@ -434,7 +560,7 @@ class MainWindow(QWidget):
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(0)
         
-        self.mapping_thread = UVMappingThread(self.vertices, self.faces)
+        self.mapping_thread = ConformalMappingThread(self.vertices, self.faces)
         self.mapping_thread.progress_signal.connect(self.progress_bar.setValue)
         self.mapping_thread.log_signal.connect(self.log)
         self.mapping_thread.finished_signal.connect(self.on_mapping_finished)
@@ -442,7 +568,7 @@ class MainWindow(QWidget):
         
         self.log("Computing UV mapping...")
     
-    def on_mapping_finished(self, uv_vertices, uv_faces):
+    def on_mapping_finished(self, uv_vertices, uv_faces, triangles_3d):
         self.load_btn.setEnabled(True)
         self.process_btn.setEnabled(True)
         self.progress_bar.setVisible(False)
@@ -450,8 +576,12 @@ class MainWindow(QWidget):
         if uv_vertices is not None and uv_faces is not None:
             self.uv_vertices = uv_vertices
             self.uv_faces = uv_faces
-            self.uv_viewer.set_uv_layout(uv_vertices, uv_faces)
+            
             self.log(f"UV mapping complete: {len(uv_vertices)} vertices, {len(uv_faces)} faces")
+            
+            # Update comparison viewer
+            self.comparison_viewer.uv_viewer.set_uv_layout(uv_vertices, uv_faces)
+            
         else:
             self.log("UV mapping failed")
             QMessageBox.warning(self, "Mapping Error", "Failed to compute UV mapping")
