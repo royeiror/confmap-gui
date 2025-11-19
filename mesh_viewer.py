@@ -4,7 +4,7 @@ from PyQt5.QtWidgets import (QOpenGLWidget, QVBoxLayout, QHBoxLayout, QWidget,
                              QLabel, QSplitter, QCheckBox, QPushButton, QComboBox,
                              QFileDialog, QMessageBox, QSlider, QSpinBox, QApplication,
                              QProgressBar, QTextEdit, QTabWidget, QGroupBox)
-from PyQt5.QtCore import Qt, QPoint, QThread, pyqtSignal
+from PyQt5.QtCore import Qt, QPoint, QThread, pyqtSignal, QRectF
 from PyQt5.QtGui import QMouseEvent
 from OpenGL.GL import *
 from OpenGL.GLU import *
@@ -14,6 +14,7 @@ import sys
 from scipy.sparse import lil_matrix
 from scipy.sparse.linalg import spsolve
 import time
+import math
 
 class SimpleObjLoader:
     """Simple OBJ file loader that doesn't require trimesh"""
@@ -63,11 +64,98 @@ class SimpleObjLoader:
         except Exception as e:
             raise ValueError(f"Error parsing OBJ file: {str(e)}")
 
+class TrianglePacker:
+    """Packs triangles efficiently for fabric cutting patterns"""
+    
+    @staticmethod
+    def pack_triangles(triangles_3d, uv_vertices, uv_faces, padding=0.02):
+        """Pack triangles into a rectangular area for efficient fabric usage"""
+        # Extract individual triangles with their original 3D data
+        triangle_islands = []
+        
+        for i, face in enumerate(uv_faces):
+            if len(face) == 3:
+                # Get UV coordinates for this triangle
+                uv_triangle = [uv_vertices[face[0]], uv_vertices[face[1]], uv_vertices[face[2]]]
+                
+                # Get corresponding 3D triangle for distortion computation
+                if i < len(triangles_3d):
+                    triangle_3d = triangles_3d[i]
+                else:
+                    triangle_3d = None
+                
+                triangle_islands.append({
+                    'uv_points': np.array(uv_triangle),
+                    'face_index': i,
+                    '3d_data': triangle_3d
+                })
+        
+        # Sort triangles by area (largest first for better packing)
+        triangle_islands.sort(key=lambda x: TrianglePacker.triangle_area(x['uv_points']), reverse=True)
+        
+        # Pack triangles
+        packed_triangles = []
+        current_x = 0.0
+        current_y = 0.0
+        row_height = 0.0
+        max_width = 0.0
+        
+        for triangle in triangle_islands:
+            points = triangle['uv_points']
+            
+            # Calculate triangle bounding box
+            min_x, min_y = np.min(points, axis=0)
+            max_x, max_y = np.max(points, axis=0)
+            width = max_x - min_x
+            height = max_y - min_y
+            
+            # Check if triangle fits in current row
+            if current_x + width + padding > 1.0:  # Start new row
+                current_x = 0.0
+                current_y += row_height + padding
+                row_height = 0.0
+            
+            # Position triangle
+            offset_x = current_x - min_x
+            offset_y = current_y - min_y
+            
+            # Update row height
+            row_height = max(row_height, height)
+            max_width = max(max_width, current_x + width)
+            
+            # Store packed triangle
+            packed_points = points + np.array([offset_x, offset_y])
+            packed_triangles.append({
+                'original_face_index': triangle['face_index'],
+                'packed_points': packed_points,
+                '3d_data': triangle['3d_data']
+            })
+            
+            current_x += width + padding
+        
+        # Normalize all points to fit in [0,1] range
+        scale_factor = max(max_width, current_y + row_height)
+        if scale_factor > 0:
+            for triangle in packed_triangles:
+                triangle['packed_points'] /= scale_factor
+        
+        return packed_triangles
+
+    @staticmethod
+    def triangle_area(points):
+        """Calculate area of a triangle"""
+        if len(points) != 3:
+            return 0.0
+        a = points[0]
+        b = points[1]
+        c = points[2]
+        return 0.5 * abs((b[0]-a[0])*(c[1]-a[1]) - (c[0]-a[0])*(b[1]-a[1]))
+
 class ConformalMappingThread(QThread):
     """Thread for computing conformal mapping to avoid GUI freezing"""
     progress_signal = pyqtSignal(int)
     log_signal = pyqtSignal(str)
-    finished_signal = pyqtSignal(object, object)  # uv_vertices, uv_faces
+    finished_signal = pyqtSignal(object, object, object)  # uv_vertices, uv_faces, triangles_3d
     
     def __init__(self, vertices, faces):
         super().__init__()
@@ -77,195 +165,83 @@ class ConformalMappingThread(QThread):
     def run(self):
         try:
             self.log_signal.emit("Starting conformal mapping...")
-            uv_vertices, uv_faces = self.compute_conformal_map()
-            self.finished_signal.emit(uv_vertices, uv_faces)
+            uv_vertices, uv_faces, triangles_3d = self.compute_conformal_map()
+            self.finished_signal.emit(uv_vertices, uv_faces, triangles_3d)
             self.log_signal.emit("Conformal mapping completed successfully!")
         except Exception as e:
             self.log_signal.emit(f"Error in conformal mapping: {str(e)}")
-            self.finished_signal.emit(None, None)
+            self.finished_signal.emit(None, None, None)
     
     def compute_conformal_map(self):
-        """Compute a simple conformal map using harmonic mapping without trimesh"""
+        """Compute per-face conformal mapping with individual triangle parameterization"""
         self.progress_signal.emit(10)
-        self.log_signal.emit("Building mesh connectivity...")
+        self.log_signal.emit("Computing individual triangle mappings...")
         
-        n_vertices = len(self.vertices)
         n_faces = len(self.faces)
+        triangles_3d = []
+        uv_vertices = []
+        uv_faces = []
+        vertex_offset = 0
         
-        # Find boundary vertices (simplified approach)
-        boundary = self.find_boundary_vertices()
-        
-        if len(boundary) == 0:
-            self.log_signal.emit("No boundary found - using convex hull approximation")
-            boundary = self.approximate_convex_hull()
-        
-        if len(boundary) == 0:
-            raise ValueError("Cannot find suitable boundary for mapping")
-        
-        self.progress_signal.emit(30)
-        self.log_signal.emit(f"Found boundary with {len(boundary)} vertices")
-        
-        # Map boundary to circle
-        n_boundary = len(boundary)
-        boundary_uv = np.zeros((n_boundary, 2))
-        for i, vertex_idx in enumerate(boundary):
-            angle = 2 * np.pi * i / n_boundary
-            boundary_uv[i] = [0.5 + 0.4 * np.cos(angle), 0.5 + 0.4 * np.sin(angle)]
-        
-        self.progress_signal.emit(50)
-        self.log_signal.emit("Setting up linear system...")
-        
-        # Build cotangent Laplacian matrix
-        L = lil_matrix((n_vertices, n_vertices))
-        
-        for face in self.faces:
-            if len(face) == 3:
-                for i in range(3):
-                    v1 = face[i]
-                    v2 = face[(i + 1) % 3]
-                    v3 = face[(i + 2) % 3]
-                    
-                    # Compute cotangent weight
-                    vec1 = self.vertices[v1] - self.vertices[v3]
-                    vec2 = self.vertices[v2] - self.vertices[v3]
-                    cross_norm = np.linalg.norm(np.cross(vec1, vec2))
-                    if cross_norm > 1e-10:
-                        cot_angle = np.dot(vec1, vec2) / cross_norm
-                        
-                        L[v1, v2] += cot_angle
-                        L[v2, v1] += cot_angle
-                        L[v1, v1] -= cot_angle
-                        L[v2, v2] -= cot_angle
-        
-        self.progress_signal.emit(70)
-        self.log_signal.emit("Solving linear system...")
-        
-        # Solve for interior vertices
-        uv_vertices = np.zeros((n_vertices, 2))
-        
-        # Set boundary conditions
-        for coord in [0, 1]:  # x and y coordinates
-            b = np.zeros(n_vertices)
+        for face_idx, face in enumerate(self.faces):
+            if len(face) != 3:
+                continue
+                
+            self.progress_signal.emit(10 + int(80 * face_idx / n_faces))
             
-            # Set boundary values
-            for i, vertex_idx in enumerate(boundary):
-                b[vertex_idx] = boundary_uv[i, coord]
+            # Get 3D triangle
+            v0_3d, v1_3d, v2_3d = self.vertices[face[0]], self.vertices[face[1]], self.vertices[face[2]]
+            triangles_3d.append((v0_3d, v1_3d, v2_3d))
             
-            # Modify system for boundary conditions
-            L_mod = L.copy().tocsr()
-            b_mod = b.copy()
+            # Simple planar parameterization for each triangle
+            # Use the triangle's plane coordinates
+            edge1 = v1_3d - v0_3d
+            edge2 = v2_3d - v0_3d
             
-            for vertex_idx in boundary:
-                L_mod[vertex_idx, :] = 0
-                L_mod[vertex_idx, vertex_idx] = 1
-                b_mod[vertex_idx] = b[vertex_idx]
+            # Create orthonormal basis in triangle's plane
+            normal = np.cross(edge1, edge2)
+            if np.linalg.norm(normal) < 1e-10:
+                # Degenerate triangle, use default UVs
+                uv_triangle = np.array([[0, 0], [1, 0], [0, 1]], dtype=np.float32)
+            else:
+                normal = normal / np.linalg.norm(normal)
+                
+                # Choose basis vectors in the plane
+                u_axis = edge1 / np.linalg.norm(edge1)
+                v_axis = np.cross(normal, u_axis)
+                v_axis = v_axis / np.linalg.norm(v_axis)
+                
+                # Project vertices to 2D
+                uv0 = np.array([0, 0])
+                uv1 = np.array([np.linalg.norm(edge1), 0])
+                uv2 = np.array([np.dot(edge2, u_axis), np.dot(edge2, v_axis)])
+                
+                uv_triangle = np.array([uv0, uv1, uv2])
             
-            # Solve
-            uv_vertices[:, coord] = spsolve(L_mod, b_mod)
+            # Add to UV arrays
+            uv_vertices.extend(uv_triangle)
+            uv_faces.append([vertex_offset, vertex_offset + 1, vertex_offset + 2])
+            vertex_offset += 3
         
         self.progress_signal.emit(90)
-        self.log_signal.emit("Normalizing UV coordinates...")
+        self.log_signal.emit("Packing triangles for fabric cutting...")
         
-        # Normalize to [0,1] range
-        uv_min = np.min(uv_vertices, axis=0)
-        uv_max = np.max(uv_vertices, axis=0)
-        uv_range = uv_max - uv_min
-        if uv_range[0] > 0 and uv_range[1] > 0:
-            uv_vertices = (uv_vertices - uv_min) / uv_range.max() * 0.9 + 0.05
+        # Pack triangles efficiently
+        packed_data = TrianglePacker.pack_triangles(triangles_3d, np.array(uv_vertices), uv_faces)
+        
+        # Rebuild UV arrays from packed data
+        packed_uv_vertices = []
+        packed_uv_faces = []
+        new_vertex_offset = 0
+        
+        for packed_triangle in packed_data:
+            points = packed_triangle['packed_points']
+            packed_uv_vertices.extend(points)
+            packed_uv_faces.append([new_vertex_offset, new_vertex_offset + 1, new_vertex_offset + 2])
+            new_vertex_offset += 3
         
         self.progress_signal.emit(100)
-        return uv_vertices, self.faces
-    
-    def find_boundary_vertices(self):
-        """Find boundary vertices by detecting edges used only once"""
-        edge_count = {}
-        
-        for face in self.faces:
-            if len(face) == 3:
-                for i in range(3):
-                    v1 = face[i]
-                    v2 = face[(i + 1) % 3]
-                    edge = tuple(sorted([v1, v2]))
-                    edge_count[edge] = edge_count.get(edge, 0) + 1
-        
-        # Boundary edges are those used only once
-        boundary_edges = [edge for edge, count in edge_count.items() if count == 1]
-        boundary_vertices = set()
-        
-        for edge in boundary_edges:
-            boundary_vertices.add(edge[0])
-            boundary_vertices.add(edge[1])
-        
-        # Order boundary vertices
-        if boundary_edges:
-            ordered_boundary = self.order_boundary_vertices(boundary_edges)
-            return ordered_boundary
-        else:
-            return list(boundary_vertices)
-    
-    def order_boundary_vertices(self, boundary_edges):
-        """Order boundary vertices to form a loop"""
-        if not boundary_edges:
-            return []
-        
-        # Build adjacency list
-        adj = {}
-        for edge in boundary_edges:
-            v1, v2 = edge
-            adj.setdefault(v1, []).append(v2)
-            adj.setdefault(v2, []).append(v1)
-        
-        # Find starting vertex (any vertex with degree 1)
-        start_vertex = None
-        for vertex, neighbors in adj.items():
-            if len(neighbors) == 1:
-                start_vertex = vertex
-                break
-        
-        if start_vertex is None:
-            start_vertex = list(adj.keys())[0]
-        
-        # Traverse boundary
-        ordered = [start_vertex]
-        current = start_vertex
-        prev = None
-        
-        while True:
-            neighbors = [n for n in adj[current] if n != prev]
-            if not neighbors:
-                break
-            next_vertex = neighbors[0]
-            if next_vertex == start_vertex:
-                break
-            ordered.append(next_vertex)
-            prev, current = current, next_vertex
-            if len(ordered) > len(adj):
-                break  # Prevent infinite loops
-        
-        return ordered
-    
-    def approximate_convex_hull(self):
-        """Simple convex hull approximation for closed meshes"""
-        # Use vertices with extreme coordinates
-        if len(self.vertices) == 0:
-            return []
-        
-        # Simple approach: use vertices on the convex hull in XY plane
-        points_2d = self.vertices[:, :2]
-        
-        # Graham scan-like simple selection
-        center = np.mean(points_2d, axis=0)
-        angles = np.arctan2(points_2d[:, 1] - center[1], points_2d[:, 0] - center[0])
-        
-        # Select evenly spaced points around the center
-        n_boundary = min(20, len(self.vertices))
-        indices = np.argsort(angles)
-        boundary_indices = indices[np.linspace(0, len(indices)-1, n_boundary, dtype=int)]
-        
-        return boundary_indices.tolist()
-
-# ... (Keep all the other classes: MeshViewer3D, UVLayoutViewer, ComparisonViewer exactly as before)
-# I'll include the essential parts but you can copy the complete classes from your previous code
+        return np.array(packed_uv_vertices, dtype=np.float32), packed_uv_faces, triangles_3d
 
 class MeshViewer3D(QOpenGLWidget):
     def __init__(self, parent=None):
@@ -715,7 +691,6 @@ class UVLayoutViewer(QOpenGLWidget):
         self.show_wireframe_overlay = show_wireframe
         self.update()
 
-
 class ComparisonViewer(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1082,8 +1057,6 @@ class ComparisonViewer(QWidget):
                 'font-weight': 'bold' if i == 0 else 'normal'
             }).text = line
 
-
-
 class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
@@ -1261,7 +1234,7 @@ class MainWindow(QWidget):
         
         self.log("Starting UV mapping computation...")
     
-    def on_mapping_finished(self, uv_vertices, uv_faces):
+    def on_mapping_finished(self, uv_vertices, uv_faces, triangles_3d):
         """Handle completion of UV mapping"""
         # Re-enable buttons
         self.load_btn.setEnabled(True)
@@ -1271,6 +1244,7 @@ class MainWindow(QWidget):
         if uv_vertices is not None and uv_faces is not None:
             self.uv_vertices = uv_vertices
             self.uv_faces = uv_faces
+            self.comparison_viewer.triangles_3d = triangles_3d
             
             # Update comparison viewer with both 3D and UV data
             self.comparison_viewer.set_mesh_data(
@@ -1278,10 +1252,11 @@ class MainWindow(QWidget):
                 self.uv_vertices, self.uv_faces
             )
             
-            self.log("UV mapping completed. Ready for export.")
+            self.log("UV mapping completed. Triangles packed for fabric cutting.")
+            self.log(f"Generated {len(uv_faces)} triangle islands for fabric forming.")
             
-            # Switch to distortion view
-            self.comparison_viewer.uv_mode_combo.setCurrentText("Conformal Distortion")
+            # Switch to wireframe view to see the packed triangles
+            self.comparison_viewer.uv_mode_combo.setCurrentText("Wireframe")
             
         else:
             self.log("UV mapping failed.")
@@ -1297,440 +1272,7 @@ class MainWindow(QWidget):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    
-    # Set application style
     app.setStyle('Fusion')
-    
     window = MainWindow()
     window.show()
-    
-    sys.exit(app.exec_())
-
-
-class ConformalMappingThread(QThread):
-    """Thread for computing conformal mapping to avoid GUI freezing"""
-    progress_signal = pyqtSignal(int)
-    log_signal = pyqtSignal(str)
-    finished_signal = pyqtSignal(object, object)  # uv_vertices, uv_faces
-    
-    def __init__(self, vertices, faces):
-        super().__init__()
-        self.vertices = vertices
-        self.faces = faces
-        
-    def run(self):
-        try:
-            self.log_signal.emit("Starting conformal mapping...")
-            uv_vertices, uv_faces = self.compute_conformal_map()
-            self.finished_signal.emit(uv_vertices, uv_faces)
-            self.log_signal.emit("Conformal mapping completed successfully!")
-        except Exception as e:
-            self.log_signal.emit(f"Error in conformal mapping: {str(e)}")
-            self.finished_signal.emit(None, None)
-    
-    def compute_conformal_map(self):
-        """Compute a simple conformal map using harmonic mapping without trimesh"""
-        self.progress_signal.emit(10)
-        self.log_signal.emit("Building mesh connectivity...")
-        
-        n_vertices = len(self.vertices)
-        n_faces = len(self.faces)
-        
-        # Find boundary vertices (simplified approach)
-        boundary = self.find_boundary_vertices()
-        
-        if len(boundary) == 0:
-            self.log_signal.emit("No boundary found - using convex hull approximation")
-            boundary = self.approximate_convex_hull()
-        
-        if len(boundary) == 0:
-            raise ValueError("Cannot find suitable boundary for mapping")
-        
-        self.progress_signal.emit(30)
-        self.log_signal.emit(f"Found boundary with {len(boundary)} vertices")
-        
-        # Map boundary to circle
-        n_boundary = len(boundary)
-        boundary_uv = np.zeros((n_boundary, 2))
-        for i, vertex_idx in enumerate(boundary):
-            angle = 2 * np.pi * i / n_boundary
-            boundary_uv[i] = [0.5 + 0.4 * np.cos(angle), 0.5 + 0.4 * np.sin(angle)]
-        
-        self.progress_signal.emit(50)
-        self.log_signal.emit("Setting up linear system...")
-        
-        # Build cotangent Laplacian matrix
-        L = lil_matrix((n_vertices, n_vertices))
-        
-        for face in self.faces:
-            if len(face) == 3:
-                for i in range(3):
-                    v1 = face[i]
-                    v2 = face[(i + 1) % 3]
-                    v3 = face[(i + 2) % 3]
-                    
-                    # Compute cotangent weight
-                    vec1 = self.vertices[v1] - self.vertices[v3]
-                    vec2 = self.vertices[v2] - self.vertices[v3]
-                    cross_norm = np.linalg.norm(np.cross(vec1, vec2))
-                    if cross_norm > 1e-10:
-                        cot_angle = np.dot(vec1, vec2) / cross_norm
-                        
-                        L[v1, v2] += cot_angle
-                        L[v2, v1] += cot_angle
-                        L[v1, v1] -= cot_angle
-                        L[v2, v2] -= cot_angle
-        
-        self.progress_signal.emit(70)
-        self.log_signal.emit("Solving linear system...")
-        
-        # Solve for interior vertices
-        uv_vertices = np.zeros((n_vertices, 2))
-        
-        # Set boundary conditions
-        for coord in [0, 1]:  # x and y coordinates
-            b = np.zeros(n_vertices)
-            
-            # Set boundary values
-            for i, vertex_idx in enumerate(boundary):
-                b[vertex_idx] = boundary_uv[i, coord]
-            
-            # Modify system for boundary conditions
-            L_mod = L.copy().tocsr()
-            b_mod = b.copy()
-            
-            for vertex_idx in boundary:
-                L_mod[vertex_idx, :] = 0
-                L_mod[vertex_idx, vertex_idx] = 1
-                b_mod[vertex_idx] = b[vertex_idx]
-            
-            # Solve
-            uv_vertices[:, coord] = spsolve(L_mod, b_mod)
-        
-        self.progress_signal.emit(90)
-        self.log_signal.emit("Normalizing UV coordinates...")
-        
-        # Normalize to [0,1] range
-        uv_min = np.min(uv_vertices, axis=0)
-        uv_max = np.max(uv_vertices, axis=0)
-        uv_range = uv_max - uv_min
-        if uv_range[0] > 0 and uv_range[1] > 0:
-            uv_vertices = (uv_vertices - uv_min) / uv_range.max() * 0.9 + 0.05
-        
-        self.progress_signal.emit(100)
-        return uv_vertices, self.faces
-    
-    def find_boundary_vertices(self):
-        """Find boundary vertices by detecting edges used only once"""
-        edge_count = {}
-        
-        for face in self.faces:
-            if len(face) == 3:
-                for i in range(3):
-                    v1 = face[i]
-                    v2 = face[(i + 1) % 3]
-                    edge = tuple(sorted([v1, v2]))
-                    edge_count[edge] = edge_count.get(edge, 0) + 1
-        
-        # Boundary edges are those used only once
-        boundary_edges = [edge for edge, count in edge_count.items() if count == 1]
-        boundary_vertices = set()
-        
-        for edge in boundary_edges:
-            boundary_vertices.add(edge[0])
-            boundary_vertices.add(edge[1])
-        
-        # Order boundary vertices
-        if boundary_edges:
-            ordered_boundary = self.order_boundary_vertices(boundary_edges)
-            return ordered_boundary
-        else:
-            return list(boundary_vertices)
-    
-    def order_boundary_vertices(self, boundary_edges):
-        """Order boundary vertices to form a loop"""
-        if not boundary_edges:
-            return []
-        
-        # Build adjacency list
-        adj = {}
-        for edge in boundary_edges:
-            v1, v2 = edge
-            adj.setdefault(v1, []).append(v2)
-            adj.setdefault(v2, []).append(v1)
-        
-        # Find starting vertex (any vertex with degree 1)
-        start_vertex = None
-        for vertex, neighbors in adj.items():
-            if len(neighbors) == 1:
-                start_vertex = vertex
-                break
-        
-        if start_vertex is None:
-            start_vertex = list(adj.keys())[0]
-        
-        # Traverse boundary
-        ordered = [start_vertex]
-        current = start_vertex
-        prev = None
-        
-        while True:
-            neighbors = [n for n in adj[current] if n != prev]
-            if not neighbors:
-                break
-            next_vertex = neighbors[0]
-            if next_vertex == start_vertex:
-                break
-            ordered.append(next_vertex)
-            prev, current = current, next_vertex
-            if len(ordered) > len(adj):
-                break  # Prevent infinite loops
-        
-        return ordered
-    
-    def approximate_convex_hull(self):
-        """Simple convex hull approximation for closed meshes"""
-        # Use vertices with extreme coordinates
-        if len(self.vertices) == 0:
-            return []
-        
-        # Simple approach: use vertices on the convex hull in XY plane
-        points_2d = self.vertices[:, :2]
-        
-        # Graham scan-like simple selection
-        center = np.mean(points_2d, axis=0)
-        angles = np.arctan2(points_2d[:, 1] - center[1], points_2d[:, 0] - center[0])
-        
-        # Select evenly spaced points around the center
-        n_boundary = min(20, len(self.vertices))
-        indices = np.argsort(angles)
-        boundary_indices = indices[np.linspace(0, len(indices)-1, n_boundary, dtype=int)]
-        
-        return boundary_indices.tolist()
-
-
-
-
-class MainWindow(QWidget):
-    def __init__(self):
-        super().__init__()
-        self.setWindowTitle("UV Conformal Map Tool - Fabric Forming")
-        self.setGeometry(100, 100, 1400, 900)
-        
-        self.vertices = None
-        self.faces = None
-        self.uv_vertices = None
-        self.uv_faces = None
-        
-        self.mapping_thread = None
-        self.init_ui()
-        
-    def init_ui(self):
-        layout = QVBoxLayout(self)
-        
-        # Create tabs for better organization
-        tabs = QTabWidget()
-        layout.addWidget(tabs)
-        
-        # Main visualization tab
-        vis_tab = QWidget()
-        vis_layout = QVBoxLayout(vis_tab)
-        
-        # File loading section
-        file_group = QGroupBox("File Operations")
-        file_layout = QHBoxLayout(file_group)
-        
-        self.load_btn = QPushButton("Load 3D Model")
-        self.load_btn.clicked.connect(self.load_model)
-        file_layout.addWidget(self.load_btn)
-        
-        self.process_btn = QPushButton("Compute UV Map")
-        self.process_btn.clicked.connect(self.compute_uv_map)
-        self.process_btn.setEnabled(False)
-        file_layout.addWidget(self.process_btn)
-        
-        file_layout.addStretch()
-        
-        self.file_label = QLabel("No file loaded")
-        file_layout.addWidget(self.file_label)
-        
-        vis_layout.addWidget(file_group)
-        
-        # Progress bar
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setVisible(False)
-        vis_layout.addWidget(self.progress_bar)
-        
-        # Add comparison viewer
-        self.comparison_viewer = ComparisonViewer()
-        vis_layout.addWidget(self.comparison_viewer)
-        
-        tabs.addTab(vis_tab, "Visualization")
-        
-        # Log tab
-        log_tab = QWidget()
-        log_layout = QVBoxLayout(log_tab)
-        
-        self.log_text = QTextEdit()
-        self.log_text.setReadOnly(True)
-        self.log_text.setMaximumHeight(200)
-        log_layout.addWidget(QLabel("Processing Log:"))
-        log_layout.addWidget(self.log_text)
-        
-        tabs.addTab(log_tab, "Log")
-        
-        # Instructions tab
-        instructions_tab = QWidget()
-        instructions_layout = QVBoxLayout(instructions_tab)
-        
-        instructions = """
-        <h3>UV Conformal Map Tool - Instructions</h3>
-        
-        <h4>Step 1: Load 3D Model</h4>
-        <ul>
-        <li>Click 'Load 3D Model' to import your 3D mesh</li>
-        <li>Supported formats: OBJ, STL, PLY</li>
-        <li>The 3D model will appear in the left viewer</li>
-        </ul>
-        
-        <h4>Step 2: Compute UV Map</h4>
-        <ul>
-        <li>Click 'Compute UV Map' to generate a conformal UV mapping</li>
-        <li>This may take a few seconds depending on mesh complexity</li>
-        <li>Progress will be shown in the progress bar and log</li>
-        </ul>
-        
-        <h4>Step 3: Visualize and Export</h4>
-        <ul>
-        <li>View the UV layout in the right panel</li>
-        <li>Toggle between wireframe and distortion heatmap views</li>
-        <li>Use 'Export Fabric Pattern' to create SVG for fabric forming</li>
-        <li>Adjust scale and seam allowance as needed</li>
-        </ul>
-        
-        <h4>Fabric Forming Process:</h4>
-        <ol>
-        <li>Print the exported SVG pattern at 100% scale</li>
-        <li>Cut along the black lines</li>
-        <li>Place on pre-stretched fabric</li>
-        <li>Adhere pattern to fabric</li>
-        <li>Release fabric tension to form 3D shape</li>
-        </ol>
-        """
-        
-        instructions_label = QLabel(instructions)
-        instructions_label.setWordWrap(True)
-        instructions_layout.addWidget(instructions_label)
-        
-        tabs.addTab(instructions_tab, "Instructions")
-        
-        self.log("Application started. Load a 3D model to begin.")
-        
-    def log(self, message):
-        """Add message to log with timestamp"""
-        timestamp = time.strftime("%H:%M:%S")
-        self.log_text.append(f"[{timestamp}] {message}")
-        
-    def load_model(self):
-        """Load a 3D model file"""
-        filename, _ = QFileDialog.getOpenFileName(
-            self, "Open 3D Model", "", 
-            "3D Files (*.obj *.stl *.ply);;All Files (*)"
-        )
-        
-        if not filename:
-            return
-            
-        try:
-            self.log(f"Loading model: {os.path.basename(filename)}")
-            self.file_label.setText(f"Loaded: {os.path.basename(filename)}")
-            
-            # Load mesh using trimesh
-            mesh = trimesh.load_mesh(filename)
-            self.vertices = mesh.vertices.astype(np.float32)
-            self.faces = mesh.faces.astype(np.int32)
-            
-            self.log(f"Mesh loaded: {len(self.vertices)} vertices, {len(self.faces)} faces")
-            
-            # Update 3D viewer
-            self.comparison_viewer.mesh_viewer.set_mesh(self.vertices, self.faces)
-            
-            # Enable process button
-            self.process_btn.setEnabled(True)
-            
-            # Clear previous UV data
-            self.uv_vertices = None
-            self.uv_faces = None
-            self.comparison_viewer.uv_viewer.set_uv_layout(None, None)
-            
-            self.log("Model loaded successfully. Ready for UV mapping.")
-            
-        except Exception as e:
-            self.log(f"Error loading model: {str(e)}")
-            QMessageBox.critical(self, "Load Error", f"Failed to load model:\n{str(e)}")
-    
-    def compute_uv_map(self):
-        """Compute conformal UV mapping"""
-        if self.vertices is None or self.faces is None:
-            QMessageBox.warning(self, "No Model", "Please load a 3D model first.")
-            return
-            
-        # Disable buttons during processing
-        self.load_btn.setEnabled(False)
-        self.process_btn.setEnabled(False)
-        self.progress_bar.setVisible(True)
-        self.progress_bar.setValue(0)
-        
-        # Start mapping thread
-        self.mapping_thread = ConformalMappingThread(self.vertices, self.faces)
-        self.mapping_thread.progress_signal.connect(self.progress_bar.setValue)
-        self.mapping_thread.log_signal.connect(self.log)
-        self.mapping_thread.finished_signal.connect(self.on_mapping_finished)
-        self.mapping_thread.start()
-        
-        self.log("Starting UV mapping computation...")
-    
-    def on_mapping_finished(self, uv_vertices, uv_faces):
-        """Handle completion of UV mapping"""
-        # Re-enable buttons
-        self.load_btn.setEnabled(True)
-        self.process_btn.setEnabled(True)
-        self.progress_bar.setVisible(False)
-        
-        if uv_vertices is not None and uv_faces is not None:
-            self.uv_vertices = uv_vertices
-            self.uv_faces = uv_faces
-            
-            # Update comparison viewer with both 3D and UV data
-            self.comparison_viewer.set_mesh_data(
-                self.vertices, self.faces, 
-                self.uv_vertices, self.uv_faces
-            )
-            
-            self.log("UV mapping completed. Ready for export.")
-            
-            # Switch to distortion view
-            self.comparison_viewer.uv_mode_combo.setCurrentText("Conformal Distortion")
-            
-        else:
-            self.log("UV mapping failed.")
-            QMessageBox.warning(self, "Mapping Error", "Failed to compute UV mapping.")
-    
-    def closeEvent(self, event):
-        """Handle application closure"""
-        if self.mapping_thread and self.mapping_thread.isRunning():
-            self.mapping_thread.terminate()
-            self.mapping_thread.wait()
-        event.accept()
-
-
-if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    
-    # Set application style
-    app.setStyle('Fusion')
-    
-    window = MainWindow()
-    window.show()
-    
     sys.exit(app.exec_())
