@@ -463,6 +463,103 @@ class ConformalMappingThread(QThread):
             self.log_signal.emit(f"Error in conformal mapping: {str(e)}")
             self.finished_signal.emit(None, None, None)
     
+    def compute_conformal_map(self):
+        """Compute per-face conformal mapping with individual triangle parameterization"""
+        self.progress_signal.emit(10)
+        self.log_signal.emit("Computing individual triangle mappings...")
+        
+        n_faces = len(self.faces)
+        triangles_3d = []
+        uv_vertices = []
+        uv_faces = []
+        vertex_offset = 0
+        
+        for face_idx, face in enumerate(self.faces):
+            if len(face) != 3:
+                continue
+                
+            self.progress_signal.emit(10 + int(80 * face_idx / n_faces))
+            
+            # Get 3D triangle
+            v0_3d, v1_3d, v2_3d = self.vertices[face[0]], self.vertices[face[1]], self.vertices[face[2]]
+            triangles_3d.append((v0_3d, v1_3d, v2_3d))
+            
+            # Simple planar parameterization for each triangle
+            # Use the triangle's plane coordinates
+            edge1 = v1_3d - v0_3d
+            edge2 = v2_3d - v0_3d
+            
+            # Create orthonormal basis in triangle's plane
+            normal = np.cross(edge1, edge2)
+            if np.linalg.norm(normal) < 1e-10:
+                # Degenerate triangle, use default UVs
+                uv_triangle = np.array([[0, 0], [1, 0], [0, 1]], dtype=np.float32)
+            else:
+                normal = normal / np.linalg.norm(normal)
+                
+                # Choose basis vectors in the plane
+                u_axis = edge1 / np.linalg.norm(edge1)
+                v_axis = np.cross(normal, u_axis)
+                v_axis = v_axis / np.linalg.norm(v_axis)
+                
+                # Project vertices to 2D
+                uv0 = np.array([0, 0])
+                uv1 = np.array([np.linalg.norm(edge1), 0])
+                uv2 = np.array([np.dot(edge2, u_axis), np.dot(edge2, v_axis)])
+                
+                uv_triangle = np.array([uv0, uv1, uv2])
+            
+            # Add to UV arrays
+            uv_vertices.extend(uv_triangle)
+            uv_faces.append([vertex_offset, vertex_offset + 1, vertex_offset + 2])
+            vertex_offset += 3
+        
+        self.progress_signal.emit(90)
+        self.log_signal.emit("Packing triangles for fabric cutting...")
+        
+        # Pack triangles efficiently
+        packed_data = TrianglePacker.pack_triangles(triangles_3d, np.array(uv_vertices), uv_faces)
+        
+        # Rebuild UV arrays from packed data
+        packed_uv_vertices = []
+        packed_uv_faces = []
+        packed_triangles_3d = []  # Store the corresponding 3D triangles
+        
+        new_vertex_offset = 0
+        
+        for packed_triangle in packed_data:
+            points = packed_triangle['packed_points']
+            packed_uv_vertices.extend(points)
+            packed_uv_faces.append([new_vertex_offset, new_vertex_offset + 1, new_vertex_offset + 2])
+            
+            # Store the corresponding 3D triangle data
+            if packed_triangle['3d_data'] is not None:
+                packed_triangles_3d.append(packed_triangle['3d_data'])
+            
+            new_vertex_offset += 3
+        
+        self.progress_signal.emit(100)
+        return np.array(packed_uv_vertices, dtype=np.float32), packed_uv_faces, packed_triangles_3d
+    """Thread for computing conformal mapping to avoid GUI freezing"""
+    progress_signal = pyqtSignal(int)
+    log_signal = pyqtSignal(str)
+    finished_signal = pyqtSignal(object, object, object)  # uv_vertices, uv_faces, triangles_3d
+    
+    def __init__(self, vertices, faces):
+        super().__init__()
+        self.vertices = vertices
+        self.faces = faces
+        
+    def run(self):
+        try:
+            self.log_signal.emit("Starting conformal mapping...")
+            uv_vertices, uv_faces, triangles_3d = self.compute_conformal_map()
+            self.finished_signal.emit(uv_vertices, uv_faces, triangles_3d)
+            self.log_signal.emit("Conformal mapping completed successfully!")
+        except Exception as e:
+            self.log_signal.emit(f"Error in conformal mapping: {str(e)}")
+            self.finished_signal.emit(None, None, None)
+    
    def compute_conformal_map(self):
     """Compute per-face conformal mapping with individual triangle parameterization"""
     self.progress_signal.emit(10)
