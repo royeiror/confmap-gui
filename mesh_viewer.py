@@ -248,6 +248,12 @@ class ConformalMappingThread(QThread):
             new_vertex_offset += 3
         
         self.progress_signal.emit(100)
+        
+        # DEBUG: Print some information about the generated UV data
+        print(f"Generated {len(packed_uv_vertices)} UV vertices, {len(packed_uv_faces)} UV faces")
+        if len(packed_uv_vertices) > 0:
+            print(f"UV vertices range: [{np.min(packed_uv_vertices, axis=0)}, {np.max(packed_uv_vertices, axis=0)}]")
+        
         return np.array(packed_uv_vertices, dtype=np.float32), packed_uv_faces, packed_triangles_3d
 
 class MeshViewer3D(QOpenGLWidget):
@@ -413,35 +419,40 @@ class UVLayoutViewer(QOpenGLWidget):
         
     def set_uv_layout(self, uv_vertices, uv_faces, vertices_3d=None, faces_3d=None):
         """Set UV layout data and compute distortion if 3D data is provided"""
+        print(f"UVLayoutViewer.set_uv_layout called with {len(uv_vertices) if uv_vertices is not None else 0} vertices, "
+              f"{len(uv_faces) if uv_faces is not None else 0} faces")
+        
         self.uv_vertices = uv_vertices
         self.uv_faces = uv_faces
         
         # Compute conformal distortion if 3D data is available
-        if vertices_3d is not None and faces_3d is not None and len(uv_vertices) > 0:
+        if vertices_3d is not None and faces_3d is not None and uv_vertices is not None and len(uv_vertices) > 0:
             self.compute_conformal_distortion(vertices_3d, faces_3d, uv_vertices, uv_faces)
         
         self.update()
     
     def compute_conformal_distortion(self, vertices_3d, faces_3d, uv_vertices, uv_faces):
         """Compute conformal distortion for each face using scale factors"""
+        print("Computing conformal distortion...")
         self.distortion = []
         
-        for i, face_3d in enumerate(faces_3d):
-            if len(face_3d) != 3:
+        # We need to map the packed UV faces back to the original 3D faces
+        # Since we have individual triangles, each UV face corresponds to one 3D face
+        for i, uv_face in enumerate(uv_faces):
+            if len(uv_face) != 3 or i >= len(faces_3d):
                 self.distortion.append(0.0)
                 continue
                 
             try:
-                # Get 3D triangle vertices
+                # Get 3D triangle vertices from the original mesh
+                face_3d = faces_3d[i]
+                if len(face_3d) != 3:
+                    self.distortion.append(0.0)
+                    continue
+                    
                 v0_3d, v1_3d, v2_3d = vertices_3d[face_3d[0]], vertices_3d[face_3d[1]], vertices_3d[face_3d[2]]
                 
                 # Get corresponding UV triangle vertices
-                if i < len(uv_faces):
-                    uv_face = uv_faces[i]
-                else:
-                    uv_face = face_3d
-                    
-                # Ensure we have valid UV indices
                 if (uv_face[0] >= len(uv_vertices) or uv_face[1] >= len(uv_vertices) or 
                     uv_face[2] >= len(uv_vertices)):
                     self.distortion.append(0.0)
@@ -601,10 +612,15 @@ class UVLayoutViewer(QOpenGLWidget):
         if self.uv_vertices is not None and self.uv_faces is not None:
             self.draw_uv_layout()
             self.draw_uv_boundary()
+        else:
+            # Draw placeholder text when no UV data is available
+            self.draw_placeholder()
                 
     def draw_uv_layout(self):
         if self.uv_vertices is None or self.uv_faces is None:
             return
+            
+        print(f"Drawing UV layout: {len(self.uv_vertices)} vertices, {len(self.uv_faces)} faces")
             
         if self.display_mode == "wireframe":
             # Wireframe only
@@ -660,6 +676,20 @@ class UVLayoutViewer(QOpenGLWidget):
         # Reset to defaults
         glPolygonMode(GL_FRONT_AND_BACK, GL_FILL)
         glLineWidth(1.0)
+    
+    def draw_placeholder(self):
+        """Draw placeholder text when no UV data is available"""
+        # This would require text rendering in OpenGL, which is complex
+        # For now, we'll just draw a simple cross
+        glColor3f(0.5, 0.5, 0.5)
+        glLineWidth(2.0)
+        glBegin(GL_LINES)
+        glVertex3f(0.1, 0.1, 0)
+        glVertex3f(0.9, 0.9, 0)
+        glVertex3f(0.9, 0.1, 0)
+        glVertex3f(0.1, 0.9, 0)
+        glEnd()
+        glLineWidth(1.0)
         
     def draw_uv_boundary(self):
         glColor3f(0.7, 0.7, 0.7)
@@ -696,6 +726,9 @@ class UVLayoutViewer(QOpenGLWidget):
         """Set whether to show wireframe overlay in heatmap mode"""
         self.show_wireframe_overlay = show_wireframe
         self.update()
+
+# ... (rest of the code remains the same, including ComparisonViewer and MainWindow classes)
+# The ComparisonViewer and MainWindow classes should be the same as in the previous version
 
 class ComparisonViewer(QWidget):
     def __init__(self, parent=None):
@@ -826,11 +859,16 @@ class ComparisonViewer(QWidget):
         
     def set_mesh_data(self, vertices, faces, uv_vertices, uv_faces):
         """Set mesh data for both viewers"""
+        print(f"ComparisonViewer.set_mesh_data: {len(vertices) if vertices is not None else 0} 3D vertices, "
+              f"{len(uv_vertices) if uv_vertices is not None else 0} UV vertices")
+        
         self.vertices_3d = vertices
         self.faces_3d = faces
         self.uv_vertices = uv_vertices
         self.uv_faces = uv_faces
+        
         self.mesh_viewer.set_mesh(vertices, faces)
+        
         if uv_vertices is not None and uv_faces is not None:
             # Pass 3D data to compute distortion
             self.uv_viewer.set_uv_layout(uv_vertices, uv_faces, vertices, faces)
@@ -1251,20 +1289,13 @@ class MainWindow(QWidget):
             self.uv_vertices = uv_vertices
             self.uv_faces = uv_faces
             
+            self.log(f"UV mapping generated: {len(uv_vertices)} UV vertices, {len(uv_faces)} UV faces")
+            
             # Update comparison viewer with both 3D and UV data
             self.comparison_viewer.set_mesh_data(
                 self.vertices, self.faces, 
                 self.uv_vertices, self.uv_faces
             )
-            
-            # Store triangles_3d in the comparison viewer for distortion computation
-            self.comparison_viewer.triangles_3d = triangles_3d
-            
-            # Force the UV viewer to compute distortion with the 3D triangle data
-            if triangles_3d is not None and len(triangles_3d) > 0:
-                self.comparison_viewer.uv_viewer.compute_conformal_distortion(
-                    self.vertices, self.faces, uv_vertices, uv_faces
-                )
             
             self.log("UV mapping completed. Triangles packed for fabric cutting.")
             self.log(f"Generated {len(uv_faces)} triangle islands for fabric forming.")
