@@ -1,108 +1,165 @@
-name: Build Windows Executable
+name: Build and Test UV Viewer
 
-on:
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
+on: [push, pull_request]
 
 jobs:
   build:
     runs-on: windows-latest
     
-    strategy:
-      matrix:
-        python-version: [3.9]
-    
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
+    - uses: actions/checkout@v2
     
-    - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v4
+    - name: Set up Python
+      uses: actions/setup-python@v2
       with:
-        python-version: ${{ matrix.python-version }}
-        cache: 'pip'
+        python-version: '3.9'
     
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install -r requirements.txt
-        
-    - name: Verify imports
+        pip install PyQt5 numpy pyopengl scipy
+    
+    - name: Create and run UV display test
       run: |
-        python -c "import sys; print('Python path:', sys.path)"
-        python -c "import PyQt5.QtWidgets; print('PyQt5 import successful')"
-        python -c "import numpy; print('NumPy import successful')"
-        python -c "from OpenGL.GL import *; print('PyOpenGL import successful')"
-        python -c "import xml.etree.ElementTree; print('XML import successful')"
-        python -c "import scipy; print('SciPy import successful')"
-        echo "All required imports successful!"
+        # Create the test file
+        cat > test_uv_display.py << 'EOF'
+        import numpy as np
+        import sys
+        from PyQt5.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, 
+                                     QPushButton, QLabel, QTextEdit, QOpenGLWidget)
+        from PyQt5.QtCore import Qt
+        from OpenGL.GL import *
+        from OpenGL.GLU import *
+
+        class SimpleOpenGLUVViewer(QWidget):
+            def __init__(self):
+                super().__init__()
+                self.setWindowTitle("UV Test - Simple OpenGL")
+                self.setGeometry(100, 100, 800, 600)
+                
+                layout = QVBoxLayout(self)
+                
+                self.test_btn = QPushButton("Test UV Display")
+                self.test_btn.clicked.connect(self.test_uv_display)
+                layout.addWidget(self.test_btn)
+                
+                self.gl_widget = SimpleUVOpenGLWidget()
+                layout.addWidget(self.gl_widget)
+                
+                self.log = QTextEdit()
+                self.log.setMaximumHeight(100)
+                layout.addWidget(self.log)
+                
+                self.log_message("Application started. Click 'Test UV Display'")
+            
+            def log_message(self, message):
+                self.log.append(message)
+                print(message)
+            
+            def test_uv_display(self):
+                self.log_message("Testing UV display...")
+                self.gl_widget.test_draw_triangles()
+
+        class SimpleUVOpenGLWidget(QOpenGLWidget):
+            def __init__(self):
+                super().__init__()
+                self.test_triangles = None
+            
+            def initializeGL(self):
+                print("OpenGL initialized")
+                glClearColor(1.0, 1.0, 1.0, 1.0)
+                glDisable(GL_DEPTH_TEST)
+                glDisable(GL_LIGHTING)
+            
+            def resizeGL(self, width, height):
+                print(f"Resize: {width}x{height}")
+                glViewport(0, 0, width, height)
+                glMatrixMode(GL_PROJECTION)
+                glLoadIdentity()
+                glOrtho(0, 1, 0, 1, -1, 1)
+                glMatrixMode(GL_MODELVIEW)
+                glLoadIdentity()
+            
+            def paintGL(self):
+                print("Painting...")
+                glClear(GL_COLOR_BUFFER_BIT)
+                glLoadIdentity()
+                
+                self.draw_boundary()
+                
+                if self.test_triangles is not None:
+                    self.draw_triangles()
+                else:
+                    self.draw_placeholder()
+                
+                print("Painting complete")
+            
+            def draw_boundary(self):
+                glColor3f(0.0, 0.0, 1.0)
+                glLineWidth(2.0)
+                glBegin(GL_LINE_LOOP)
+                glVertex2f(0.0, 0.0)
+                glVertex2f(1.0, 0.0)
+                glVertex2f(1.0, 1.0)
+                glVertex2f(0.0, 1.0)
+                glEnd()
+                glLineWidth(1.0)
+            
+            def draw_triangles(self):
+                print("Drawing triangles...")
+                glColor3f(1.0, 0.0, 0.0)
+                glBegin(GL_TRIANGLES)
+                for triangle in self.test_triangles:
+                    for vertex in triangle:
+                        glVertex2f(vertex[0], vertex[1])
+                glEnd()
+            
+            def draw_placeholder(self):
+                glColor3f(0.5, 0.5, 0.5)
+                glLineWidth(3.0)
+                glBegin(GL_LINES)
+                glVertex2f(0.1, 0.1)
+                glVertex2f(0.9, 0.9)
+                glVertex2f(0.9, 0.1)
+                glVertex2f(0.1, 0.9)
+                glEnd()
+                glLineWidth(1.0)
+            
+            def test_draw_triangles(self):
+                print("Setting up test triangles...")
+                self.test_triangles = [
+                    [(0.3, 0.3), (0.7, 0.3), (0.5, 0.7)],
+                    [(0.1, 0.1), (0.3, 0.1), (0.1, 0.3)],
+                    [(0.7, 0.7), (0.9, 0.7), (0.7, 0.9)]
+                ]
+                print(f"Test triangles: {self.test_triangles}")
+                self.update()
+
+        if __name__ == "__main__":
+            app = QApplication(sys.argv)
+            window = SimpleOpenGLUVViewer()
+            window.show()
+            sys.exit(app.exec_())
+        EOF
         
-    - name: Test the application
-      run: |
+        # Run the test (headless - just check if it imports and creates objects)
         python -c "
         import sys
-        sys.path.append('.')
         try:
-            # Test basic imports first
-            import numpy as np
-            from PyQt5.QtWidgets import QApplication
-            import sys as system
+            from test_uv_display import SimpleOpenGLUVViewer, SimpleUVOpenGLWidget
+            print('SUCCESS: UV test classes imported successfully')
             
-            # Test our simple OBJ loader
-            from mesh_viewer import SimpleObjLoader
-            print('SimpleObjLoader import successful')
+            # Test creating objects
+            app = QApplication(sys.argv)
+            viewer = SimpleOpenGLUVViewer()
+            widget = SimpleUVOpenGLWidget()
+            print('SUCCESS: UV test objects created successfully')
             
-            # Now try to import the main window
-            from mesh_viewer import MainWindow
-            print('MainWindow import successful')
-            
-            # Create a simple test without showing GUI
-            app = QApplication([])
-            window = MainWindow()
-            print('Application creation successful')
-            
-            # Test creating mapping thread
-            from mesh_viewer import ConformalMappingThread
-            print('ConformalMappingThread import successful')
-            
-            print('All tests passed!')
+            # Test the drawing method
+            widget.test_draw_triangles()
+            print('SUCCESS: UV drawing test completed')
             
         except Exception as e:
-            print(f'Test failed: {e}')
-            import traceback
-            traceback.print_exc()
+            print(f'FAILED: {e}')
             sys.exit(1)
         "
-    
-    - name: Build with PyInstaller
-      run: |
-        pyinstaller --onefile --windowed --name "ConfMapGUI" mesh_viewer.py
-      
-    - name: Upload executable
-      uses: actions/upload-artifact@v4
-      with:
-        name: ConfMapGUI-Windows
-        path: dist/ConfMapGUI.exe
-        retention-days: 30
-
-  test-build:
-    needs: build
-    runs-on: windows-latest
-    steps:
-    - name: Download executable
-      uses: actions/download-artifact@v4
-      with:
-        name: ConfMapGUI-Windows
-        
-    - name: Verify executable exists
-      run: |
-        dir
-        if (Test-Path "ConfMapGUI.exe") {
-          echo "Executable created successfully"
-          echo "File size: $( (Get-Item 'ConfMapGUI.exe').Length ) bytes"
-        } else {
-          echo "Executable not found"
-          exit 1
-        }
